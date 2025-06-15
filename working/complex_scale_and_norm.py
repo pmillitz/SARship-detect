@@ -1,0 +1,198 @@
+import numpy as np
+
+def process_complex_data(slc_data, epsilon=1e-6, nan_strategy='skip', verbose=False):
+    """
+    Process complex-valued SAR data by extracting amplitude and phase,
+    applying normalisation, and stacking into a 3-channel format.
+    Memory-optimized version for large arrays (~1.2GB).
+    
+    Parameters:
+    -----------
+    slc_data : numpy.ndarray
+        2D complex-valued input array (Single Look Complex data)
+    epsilon : float, optional
+        Small value to prevent log(0) in amplitude processing (default: 1e-6)
+    nan_strategy : str, optional
+        How to handle NaN/invalid values: 'interpolate', 'zero', 'mean', or 'skip' (default: 'skip')
+    verbose : bool, optional
+        Print normalisation range information (default: False)
+    
+    Returns:
+    --------
+    numpy.ndarray
+        3D array of shape (H, W, 3) with normalised amplitude, phase, and zeros channels
+        Returns None if nan_strategy='skip' and NaNs are present
+    """
+    
+    # Handle NaN/invalid values
+    valid_mask = np.isfinite(slc_data)
+    nan_count = slc_data.size - np.sum(valid_mask)
+    
+    if nan_count > 0:
+        if verbose:
+            print(f"Found {nan_count} invalid values ({nan_count/slc_data.size*100:.1f}%)")
+        
+        if nan_strategy == 'skip':
+            if verbose:
+                print("Skipping sample due to NaN values")
+            return None
+        elif nan_strategy == 'zero':
+            # In-place modification to avoid copying
+            slc_data[~valid_mask] = 0 + 0j
+        elif nan_strategy == 'mean':
+            # In-place modification to avoid copying
+            mean_val = np.mean(slc_data[valid_mask])
+            slc_data[~valid_mask] = mean_val
+        elif nan_strategy == 'interpolate':
+            # Memory-efficient interpolation using chunked processing
+            slc_data = _interpolate_chunked(slc_data, valid_mask, verbose=verbose)
+    
+    # Memory-efficient amplitude processing
+    VH_mag_norm = _process_amplitude_inplace(slc_data, epsilon, verbose)
+    
+    # Memory-efficient phase processing
+    VH_phase_norm = _process_phase_inplace(slc_data, verbose)
+    
+    # Create zeros channel (reuse memory-efficient approach)
+    zeros_channel = np.zeros(slc_data.shape)
+    
+    # Stack into (H, W, 3) format
+    image_input = np.stack((VH_mag_norm, VH_phase_norm, zeros_channel), axis=-1)
+    
+    return image_input
+
+
+def _process_amplitude_inplace(complex_data, epsilon=1e-6, verbose=False):
+    """
+    Process amplitude in-place to minimize memory usage.
+    """
+    # Extract magnitude
+    VH_mag = np.abs(complex_data)
+    
+    # In-place logarithmic scaling
+    np.log10(VH_mag + epsilon, out=VH_mag)
+    VH_mag *= 20
+    
+    # In-place normalisation
+    mag_min = VH_mag.min()
+    mag_max = VH_mag.max()
+    VH_mag -= mag_min
+    VH_mag /= (mag_max - mag_min)
+    
+    if verbose:
+        print(f"VH_mag_norm range: [0.000, 1.000]")
+    
+    return VH_mag
+
+
+def _process_phase_inplace(complex_data, verbose=False):
+    """
+    Process phase in-place to minimize memory usage.
+    """
+    # Extract phase
+    VH_phase = np.angle(complex_data)
+    
+    # Phase normalisation with floating-point tolerance
+    phase_min = VH_phase.min()
+    phase_max = VH_phase.max()
+    tolerance = 1e-6
+    
+    if verbose:
+        print(f"Raw phase range: [{phase_min:.10f}, {phase_max:.10f}]")
+    
+    # Determine the legitimate range based on data distribution
+    if phase_min >= -tolerance and phase_max <= (2*np.pi + tolerance):
+        # Data appears to be in [0, 2pi] range (with floating-point errors)
+        legitimate_range = "[0, 2pi]"
+        
+        # Clean up floating-point precision issues in-place
+        np.clip(VH_phase, 0, 2*np.pi, out=VH_phase)
+        VH_phase /= (2*np.pi)
+        
+        if verbose:
+            print(f"Detected {legitimate_range} range, applied direct normalisation")
+            if phase_max > 2*np.pi:
+                print(f"Corrected floating-point error: max {phase_max:.10f} → 2pi")
+    
+    elif phase_min >= (-np.pi - tolerance) and phase_max <= (np.pi + tolerance):
+        # Data appears to be in [-pi, pi] range (with floating-point errors)
+        legitimate_range = "[-pi, pi]"
+        
+        # Clean up floating-point precision issues in-place
+        np.clip(VH_phase, -np.pi, np.pi, out=VH_phase)
+        VH_phase += np.pi
+        VH_phase /= (2*np.pi)
+        
+        if verbose:
+            print(f"Detected {legitimate_range} range, applied shift-then-divide normalisation")
+            if phase_max > np.pi:
+                print(f"Corrected floating-point error: max {phase_max:.10f} → pi")
+            if phase_min < -np.pi:
+                print(f"Corrected floating-point error: min {phase_min:.10f} → -pi")
+    
+    else:
+        # Truly unexpected range - this indicates a real data issue
+        if verbose:
+            print(f"Warning: Unexpected phase range [{phase_min:.6f}, {phase_max:.6f}]")
+            print("This may indicate upstream processing issues")
+        
+        # Force wrap to [-pi, pi] and normalise in-place
+        # Use temporary array only for the wrapping operation
+        wrapped_phase = np.angle(np.exp(1j * VH_phase))
+        VH_phase[:] = wrapped_phase  # Copy back in-place
+        VH_phase += np.pi
+        VH_phase /= (2*np.pi)
+    
+    if verbose:
+        print(f"VH_phase_norm range: [{np.min(VH_phase):.3f}, {np.max(VH_phase):.3f}]")
+    
+    return VH_phase
+
+
+def _interpolate_chunked(slc_data, valid_mask, chunk_size=1000, verbose=False):
+    """
+    Memory-efficient chunked interpolation for large arrays.
+    """
+    from scipy.interpolate import griddata
+    
+    if verbose:
+        print(f"Using chunked interpolation with chunk_size={chunk_size}")
+    
+    # Create a copy only for interpolation (unavoidable for this strategy)
+    slc_data_clean = slc_data.copy()
+    
+    h, w = slc_data.shape
+    invalid_indices = np.where(~valid_mask)
+    
+    if len(invalid_indices[0]) == 0:
+        return slc_data_clean
+    
+    # Get valid points coordinates (memory efficient)
+    valid_indices = np.where(valid_mask)
+    valid_points = np.column_stack(valid_indices)
+    valid_values_real = slc_data[valid_mask].real
+    valid_values_imag = slc_data[valid_mask].imag
+    
+    # Process invalid points in chunks to manage memory
+    invalid_points = np.column_stack(invalid_indices)
+    n_invalid = len(invalid_points)
+    
+    for start_idx in range(0, n_invalid, chunk_size):
+        end_idx = min(start_idx + chunk_size, n_invalid)
+        chunk_points = invalid_points[start_idx:end_idx]
+        
+        # Interpolate real and imaginary parts for this chunk
+        real_interp = griddata(valid_points, valid_values_real, 
+                             chunk_points, method='linear', fill_value=0)
+        imag_interp = griddata(valid_points, valid_values_imag, 
+                             chunk_points, method='linear', fill_value=0)
+        
+        # Update the invalid points in this chunk
+        chunk_rows = invalid_indices[0][start_idx:end_idx]
+        chunk_cols = invalid_indices[1][start_idx:end_idx]
+        slc_data_clean[chunk_rows, chunk_cols] = real_interp + 1j * imag_interp
+        
+        if verbose and (start_idx % (chunk_size * 10) == 0):
+            print(f"Interpolated {end_idx}/{n_invalid} invalid points")
+    
+    return slc_data_clean
