@@ -16,12 +16,6 @@ For each matching file, the SLC or GRD data is unpacked into a NumPy array and a
 statistics computed. Optionally, the extracted array can be saved for later use.  Each tiff
 file's statistics are inserted as a new row into a dataframe which is saved to a CSV file
 named "{pattern}_stats.csv", on exit.
-
-OPTIMISATIONS:
-- Vectorised statistics computation
-- Reduced memory allocations
-- Optimised circular statistics
-- Better memory management
 """
 
 import argparse
@@ -36,13 +30,13 @@ import numpy as np
 
 from GeoTiff import load_GeoTiff
 
-# Optimised statistics functions
+# Compute statistics for SLC product
 def slc_stats(array):
     """
-    Optimised computation of basic statistics for SAR SLC data.
+    Computation of basic statistics for SAR SLC data.
     Input is a 2D complex-valued numpy array.
     """
-    # Pre-compute masks once
+    # Pre-compute masks
     valid_mask = np.isfinite(array)
     nan_count = array.size - np.sum(valid_mask)
     zero_count = np.sum(array == 0)
@@ -54,15 +48,15 @@ def slc_stats(array):
     # Use views instead of copying data
     valid_data = array[valid_mask] if nan_count > 0 else array.ravel()
     
-    # Compute real/imag parts once
+    # Compute real/imag parts
     real_part = valid_data.real
     imag_part = valid_data.imag
     
-    # Vectorised amplitude and phase computation
+    # Compute amplitude and phase
     amplitude = np.abs(valid_data)
     phase = np.angle(valid_data)
     
-    # Optimised circular statistics - compute exp(1j * phase) once
+    # Circular statistics - compute exp(1j * phase) once
     complex_phase = np.exp(1j * phase)
     mean_complex_phase = np.mean(complex_phase)
     circular_mean = np.angle(mean_complex_phase)
@@ -109,12 +103,13 @@ def slc_stats(array):
 
     return stats_dict
 
+# Compute statistics for GRD product
 def grd_stats(array):
     """
-    Optimised computation of basic statistics for SAR GRD data.
+    Computation of basic statistics for SAR GRD data.
     Input is a 2D real-valued numpy array.
     """
-    # Pre-compute mask once
+    # Pre-compute mask
     valid_mask = np.isfinite(array)
     nan_count = array.size - np.sum(valid_mask)
     zero_count = np.sum(array == 0)
@@ -218,7 +213,7 @@ def process_one_file(tiff_path: Path, mode: str, save_array: bool) -> dict:
             except Exception as e:
                 print(f"*** Warning: failed to save array for {tiff_path.name}: {e}")
 
-        # Compute statistics using optimised functions
+        # Compute statistics using relevant function
         stats_dict = None
         if "grd" in mode:
             stats_dict = grd_stats(data)

@@ -1,12 +1,19 @@
 # create_crop.py
 # 
 # Author: Peter Millitz
-# Date: 26-05-2025
-# ----------------------------------------------------------------------
-# This script extracts 4-channel crops (vh_mag, vh_phase, vv_mag, vv_phase)
-# from SAR SLC images using vessel annotations, and outputs them as NumPy
-# arrays (.npy) and YOLO-style (.txt) label files. It supports selecting specific
-# scenes for processing and saves a summary CSV of the number of crops created.
+# Created: 2025-05-26
+# 
+# Modified:
+#
+# 2025-06-15: Revised to create crops from full-size slc-vh normalised image
+#             arrays with shape (H, W, 3) and of type float64. The last axis
+#             consists of the 3-channels vh_mag, vh_phase and a 'zeros' channel.
+# ----------------------------------------------------------------------------------
+# This script extracts crops from SAR SLC VH-polarised images using vessel detection
+# annotations and outputs them as NumPy arrays (.npy) along with YOLO-style (.txt)
+# label files. Specific scenes, crop size, product type (SLC, GRD), and label
+# confidence level can be specified via the cropping.yaml file. A summary CSV file
+# listing the total number of crops created from each scene, is also output. 
 
 import pandas as pd
 import numpy as np
@@ -14,17 +21,17 @@ import yaml
 from pathlib import Path
 from GeoTiff import load_GeoTiff
 
-def extract_crop_coords(center_row, center_col, crop_size, img_height, img_width):
+def extract_crop_coords(centre_row, centre_col, crop_size, img_height, img_width):
     """
-    Compute the bounding box for a square crop centered on (center_row, center_col),
+    Compute the bounding box for a square crop centreed on (centre_row, centre_col),
     ensuring the crop stays within image bounds.
     
     Returns:
         (top, bottom, left, right): int crop boundaries
     """
     half = crop_size // 2
-    top = max(0, center_row - half)
-    left = max(0, center_col - half)
+    top = max(0, centre_row - half)
+    left = max(0, centre_col - half)
     bottom = min(img_height, top + crop_size)
     right = min(img_width, left + crop_size)
 
@@ -38,8 +45,8 @@ def extract_crop_coords(center_row, center_col, crop_size, img_height, img_width
 
 def process_crop(ann, row, crop_size, measurement_dir, swath_index, out_img_dir, out_lbl_dir):
     """
-    Process a single vessel annotation: extract 4-channel crop and save it
-    along with a YOLO-style bounding box label.
+    Process a single vessel annotation: create a cropped image (of size {crop_size}) centred on
+    supplied vessel detection coordinates and save it along with a YOLO-style bounding box label.
 
     Args:
         ann (pd.Series): annotation row
@@ -51,36 +58,36 @@ def process_crop(ann, row, crop_size, measurement_dir, swath_index, out_img_dir,
         out_lbl_dir (Path): output folder for YOLO label files
     """
     swath_key_vh = f"SLC_swath_{swath_index}_vh"
-    swath_key_vv = f"SLC_swath_{swath_index}_vv"
+    #swath_key_vv = f"SLC_swath_{swath_index}_vv"
     base_name = f"{ann['scene_id']}_{ann['detect_id']}"
 
     try:
         # Load VH and VV complex SAR images
         vh_path = measurement_dir / row[swath_key_vh]
-        vv_path = measurement_dir / row[swath_key_vv]
+        #vv_path = measurement_dir / row[swath_key_vv]
         vh_img, *_ = load_GeoTiff(str(vh_path))
-        vv_img, *_ = load_GeoTiff(str(vv_path))
-        assert vh_img.shape == vv_img.shape
+        #vv_img, *_ = load_GeoTiff(str(vv_path))
+        #assert vh_img.shape == vv_img.shape
         H, W = vh_img.shape
 
-       # Use provided detection center if available, else fallback to bounding box center
+       # Use provided detection centre if available, else fallback to bounding box centre
         if "detect_scene_row" in ann and "detect_scene_column" in ann:
-            center_row = int(ann["detect_scene_row"])
-            center_col = int(ann["detect_scene_column"])
+            centre_row = int(ann["detect_scene_row"])
+            centre_col = int(ann["detect_scene_column"])
         else:
-            center_row = int((ann["top"] + ann["bottom"]) / 2)
-            center_col = int((ann["left"] + ann["right"]) / 2)
+            centre_row = int((ann["top"] + ann["bottom"]) / 2)
+            centre_col = int((ann["left"] + ann["right"]) / 2)
 
         # Compute crop coordinates
-        top, bottom, left, right = extract_crop_coords(center_row, center_col, crop_size, H, W)
+        top, bottom, left, right = extract_crop_coords(centre_row, centre_col, crop_size, H, W)
 
         # Assemble 4-channel crop: [VH_mag, VH_phase, VV_mag, VV_phase]
         vh_crop = vh_img[top:bottom, left:right]
-        vv_crop = vv_img[top:bottom, left:right]
-        crop_4ch = np.stack([
-            np.abs(vh_crop), np.angle(vh_crop),
-            np.abs(vv_crop), np.angle(vv_crop)
-        ], axis=0)
+        #vv_crop = vv_img[top:bottom, left:right]
+        #crop_4ch = np.stack([
+        #    np.abs(vh_crop), np.angle(vh_crop),
+        #    np.abs(vv_crop), np.angle(vv_crop)
+        #], axis=0)
 
         # Determine class: 0 = vessel, 1 = fishing vessel
         class_id = 1 if pd.notna(ann.get("is_fishing")) and ann["is_fishing"] is True else 0
@@ -98,7 +105,8 @@ def process_crop(ann, row, crop_size, measurement_dir, swath_index, out_img_dir,
         # Save .npy crop and .txt label
         image_path = out_img_dir / f"{base_name}.npy"
         label_path = out_lbl_dir / f"{base_name}.txt"
-        np.save(image_path, crop_4ch)
+        #np.save(image_path, crop_4ch)
+        np.save(image_path, vh_crop) # TEMPORARY edit to save regular image array for testing
         with open(label_path, "w") as f:
             f.write(f"{class_id} {xc:.6f} {yc:.6f} {w:.6f} {h:.6f}\n")
 
@@ -133,7 +141,6 @@ def main():
 
     xView3_SLC_GRD_correspondences_path: str
         Path to the correspondence CSV file mapping scene IDs to SLC products
-
     CREATE_CROP:
       CropPath: str
           Output directory where cropped images and labels are saved
@@ -154,6 +161,7 @@ def main():
     sar_root = Path(config["SARFish_root_directory"])
     product_type = config["product_type"]
     correspondence_path = Path(config["xView3_SLC_GRD_correspondences_path"])
+    annotation_path = Path(config["annotation_path"])
     crop_path = Path(config["CREATE_CROP"]["CropPath"])
     crop_size = int(config["CREATE_CROP"]["CropSize"])
     confidence = config["CREATE_CROP"]["LabelConfidence"]
@@ -180,13 +188,15 @@ def main():
     for _, row in corr_df.iterrows():
         scene_id = row["scene_id"]
         partition = row["DATA_PARTITION"]
-        annotation_csv = sar_root / product_type / partition / f"{product_type}_{partition}.csv"
+        #annotation_csv = annotation_path
+        #annotation_csv = sar_root / product_type / partition / f"{product_type}_{partition}_labels.csv"
 
-        if not annotation_csv.exists():
-            print(f"Annotation file missing: {annotation_csv}")
-            continue
+        #if not annotation_csv.exists():
+        #    print(f"Annotation file missing: {annotation_csv}")
+        #    continue
 
-        annotations = pd.read_csv(annotation_csv)
+        #annotations = pd.read_csv(annotation_csv)
+        annotations = pd.read_csv(annotation_path)
         annotations = annotations[
             (annotations["scene_id"] == scene_id) &
             (annotations["is_vessel"] == True) &
