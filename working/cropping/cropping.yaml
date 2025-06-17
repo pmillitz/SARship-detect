@@ -1,14 +1,10 @@
-# Sets the SARFish dataset root path
-
-SARFish_root_directory: /mnt/h/SARfish
-xView3_SLC_GRD_correspondences_path: ~/CITS5014/SARFish/working/labels/xView3_SLC_GRD_correspondences.csv
-annotation_path: ~/CITS5014/SARFish/working/labels/validation/SLC/SLC_validation_labels.csv
+xView3_SLC_GRD_correspondences_path: /home/peterm/CITS5014/SARFish/working/labels/xView3_SLC_GRD_correspondences.csv
+annotations_path: /home/peterm/CITS5014/SARFish/working/labels/validation/SLC/SLC_validation_labels.csv
 product_type: SLC
+arrays_path: /mnt/h/SARFish/SLC/validation/arrays/
 
 CREATE_CROP:
-    CropPath: /mnt/h/SARFish/extracted_slc_crops/
+    CropPath: /mnt/h/SARFish/SLC/validation/extracted_crops/
     CropSize: 64 
-    LabelConfidence: HIGH
-    ScenesToProcess:
-      - 5c3d986db930f848v
+    LabelConfidence: ['HIGH', 'MEDIUM']
     
