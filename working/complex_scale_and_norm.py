@@ -3,7 +3,7 @@
 """
 complex_scale_and_norm.py
 
-Author:
+Author: Peter Milllitz
 Date: 18-06-2025
 
 Takes as input a complex-valued 2D SAR SLC product in the form of a numpy.ndarray of dtype=complex64
