@@ -4,7 +4,7 @@
 batch_sar_processing.py
 
 Author: Peter Millitz
-Created: 2025-06-18
+Created: 2025-06-20
 
 This module contains a set of functions for batch processesing all .npy files
 in a directory using the complex_scale_and_norm.py script. Contains a number of
@@ -33,8 +33,8 @@ class SARProcessingConfig:
         self.verbose = True
         
         # Global normalisation parameters (set to None for adaptive normalisation)
-        # Format: [amp_min, amp_max, phase_min, phase_max]
-        self.global_norm_params = None  # Example: [0.001, 50.2, -3.14159, 3.14159]
+        # Format: [amp_min, amp_max] (phase normalization is automatic via sine/cosine)
+        self.global_norm_params = None  # Example: [0.001, 50.2]
         
         # Processing options
         self.max_workers = None  # Number of parallel processes (None = sequential)
@@ -51,22 +51,19 @@ class SARProcessingConfig:
             raise ValueError(f"Processing script not found: {self.script_path}")
         
         if self.global_norm_params is not None:
-            if len(self.global_norm_params) != 4:
-                raise ValueError("global_norm_params must have exactly 4 values")
+            if len(self.global_norm_params) != 2:
+                raise ValueError("global_norm_params must have exactly 2 values (amp_min, amp_max)")
 
-            amp_min, amp_max, phase_min, phase_max = self.global_norm_params
+            amp_min, amp_max = self.global_norm_params
             
-            # Handle amp_min = 0.0 case
+            # Handle amp_min = 0.0 case with float32-appropriate value
             if amp_min == 0.0:
-                self.global_norm_params[0] = 1e-10
-                amp_min = 1e-10
+                self.global_norm_params[0] = 1e-6  # Float32-safe value
+                amp_min = 1e-6
             
-            # INDENT THESE LINES - they should be inside the global_norm_params check
+            # Validate amplitude parameters
             if amp_min < 0 or amp_max <= 0 or amp_min >= amp_max:
-                raise ValueError("Invalid amplitude parameters")
-            
-            if phase_min <= -3.141592653589793 or phase_max > 3.141592653589793 or phase_min >= phase_max:
-                raise ValueError("Invalid phase parameters (must be in (-π, π] range)")
+                raise ValueError("Invalid amplitude parameters: amp_min must be non-negative, amp_max > 0, and amp_min < amp_max")
 
 
 def find_sar_files(input_dir: str, pattern: str = "*.npy") -> List[Path]:
@@ -336,7 +333,8 @@ def batch_process_sar_data(config: SARProcessingConfig):
     print(f"  Epsilon: {config.epsilon}")
     print(f"  Global normalisation: {'Yes' if config.global_norm_params else 'Adaptive'}")
     if config.global_norm_params:
-        print(f"    Parameters: {config.global_norm_params}")
+        print(f"    Amplitude parameters: {config.global_norm_params}")
+        print(f"    Phase normalization: automatic via sine/cosine transformation")
     print(f"  Parallel processing: {'Yes' if config.max_workers else 'Sequential'}")
     print(f"  Skip existing: {config.skip_existing}")
     
@@ -390,8 +388,8 @@ def setup_global_norm_processing():
     config.skip_existing = True
     
     # Set global normalisation parameters
-    # [amp_min, amp_max, phase_min, phase_max]
-    config.global_norm_params = [0.001, 50.2, -3.14159, 3.14159]
+    # [amp_min, amp_max] (phase normalization is automatic)
+    config.global_norm_params = [0.001, 50.2]
     
     return config
 
@@ -452,7 +450,7 @@ config = SARProcessingConfig()
 config.input_dir = "path/to/your/sar/crops"
 config.output_dir = "path/to/output"
 config.nan_strategy = "interpolate"
-config.global_norm_params = [0.005, 25.0, -2.5, 2.5]
+config.global_norm_params = [0.005, 25.0]  # Only amplitude parameters needed
 config.max_workers = 2
 batch_process_sar_data(config)
 
@@ -465,5 +463,11 @@ for f in files[:5]:  # Show first 5 files
 # Cell 7: Process only specific files
 config = setup_basic_processing()
 config.file_pattern = "subset_*.npy"  # Only process files starting with "subset_"
+batch_process_sar_data(config)
+
+# Cell 8: Global normalization with different amplitude ranges
+config = setup_basic_processing()
+config.global_norm_params = [0.01, 100.0]  # Different amplitude range
+config.output_dir = "data/processed_crops_custom"
 batch_process_sar_data(config)
 """
