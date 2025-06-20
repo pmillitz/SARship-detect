@@ -4,18 +4,18 @@
 complex_scale_and_norm.py
 
 Author: Peter Milllitz
-Date: 18-06-2025
+Date: 19-06-2025
 
 Takes as input a complex-valued 2D SAR SLC product in the form of a numpy.ndarray of dtype=complex64
-and shape (H, W). Extracts amplitude and phase, applies decibel scaling to ammplitude and
-normalisation to amplitude and phase. Adds a third 'zeros' channel, then stacks the data. Outputs
-numpy.ndarray with shape (H, W, 3). Memory-optimised.
+and shape (H, W). Extracts amplitude and phase, applies decibel scaling to amplitude and
+sine/cosine transformation to phase. Normalises all components to [0, 1] range. Outputs
+numpy.ndarray with shape (3, H, W) compatible with YOLO models. Memory-optimised.
 
 usage: 
 
     complex_scale_and_norm.py [-h] [--output-dir OUTPUT_DIR] [--nan-strategy {skip,zero,mean,interpolate}]
                               [--epsilon EPSILON] [--verbose]
-                              [--global-norm-params AMP_MIN AMP_MAX PHASE_MIN PHASE_MAX]
+                              [--global-norm-params AMP_MIN AMP_MAX]
                               input_array
 Parameters:
 -----------
@@ -32,14 +32,15 @@ epsilon: float, optional
 verbose (v): bool, optional
     Print normalisation range information (default: False)
 global_norm_params: list of float, optional
-    Global normalisation parameters [amp_min, amp_max, phase_min, phase_max] for consistent
-    normalisation across multiple images. amp_min/max are unscaled amplitude values (will be
-    converted to dB internally), phase_min/max should be in (-π, π] range (default: None, use adaptive normalisation)
+    Global normalisation parameters [amp_min, amp_max] for consistent
+    amplitude normalisation across multiple images. amp_min/max are unscaled amplitude values 
+    (will be converted to dB internally). Phase normalisation is automatic via sine/cosine 
+    transformation. (default: None, use adaptive normalisation)
 
 Example usage:
 
     python complex_scale_and_norm.py input_array.npy --output-dir processed/ --verbose
-    python complex_scale_and_norm.py input_array.npy --global-norm-params 0.001 50.2 -3.14159 3.14159
+    python complex_scale_and_norm.py input_array.npy --global-norm-params 0.001 50.2
 
 """
 
@@ -58,7 +59,7 @@ def process_complex_data(slc_data, epsilon=1e-6, nan_strategy='skip', verbose=Fa
     Returns:
     --------
     numpy.ndarray
-        3D array of shape (H, W, 3) with normalised amplitude, phase, and zeros channels
+        3D array of shape (3, H, W) with normalised amplitude, phase_sin, and phase_cos channels
         Returns None if nan_strategy='skip' and NaNs are present
     """
     
@@ -87,29 +88,25 @@ def process_complex_data(slc_data, epsilon=1e-6, nan_strategy='skip', verbose=Fa
     
     # Extract global normalisation parameters if provided
     if global_norm_params is not None:
-        global_amp_min, global_amp_max, global_phase_min, global_phase_max = global_norm_params
+        global_amp_min, global_amp_max = global_norm_params
         use_global_norm = True
         if verbose:
             print(f"Using global normalisation parameters:")
             print(f"  Amplitude (unscaled): [{global_amp_min:.6f}, {global_amp_max:.6f}]")
-            print(f"  Phase (rad): [{global_phase_min:.6f}, {global_phase_max:.6f}]")
+            print("  Phase normalisation: automatic via sine/cosine transformation")
     else:
         use_global_norm = False
-        global_amp_min = global_amp_max = global_phase_min = global_phase_max = None
+        global_amp_min = global_amp_max = None
     
     # Memory-efficient amplitude processing
     VH_mag_norm = _process_amplitude_inplace(slc_data, epsilon, verbose, 
                                            use_global_norm, global_amp_min, global_amp_max)
     
-    # Memory-efficient phase processing
-    VH_phase_norm = _process_phase_inplace(slc_data, verbose, 
-                                         use_global_norm, global_phase_min, global_phase_max)
+    # Memory-efficient phase processing (sine/cosine components)
+    VH_phase_sin_norm, VH_phase_cos_norm = _process_phase_sincos_inplace(slc_data, verbose)
     
-    # Create zeros channel
-    zeros_channel = np.zeros_like(VH_mag_norm)
-    
-    # Stack into (H, W, 3) format
-    image_input = np.stack((VH_mag_norm, VH_phase_norm, zeros_channel), axis=-1)
+    # Stack into (3, H, W) format for YOLO compatibility
+    image_input = np.stack((VH_mag_norm, VH_phase_sin_norm, VH_phase_cos_norm), axis=0)
     
     return image_input
 
@@ -119,39 +116,46 @@ def _process_amplitude_inplace(complex_data, epsilon=1e-6, verbose=False,
     """
     Process amplitude in-place to minimise memory usage.
     """
-    # Extract magnitude
+    # Extract magnitude (automatically float32 from complex64)
     VH_mag = np.abs(complex_data)
     
+    # Use float32 constants to prevent upcasting
+    epsilon_f32 = np.float32(epsilon)
+    
     # Always apply logarithmic scaling (dB conversion)
-    np.log10(VH_mag + epsilon, out=VH_mag)
-    VH_mag *= 20
+    np.log10(VH_mag + epsilon_f32, out=VH_mag)
+    VH_mag *= np.float32(20)
     
     if use_global_norm:
-        # Convert global unscaled amplitude parameters to dB scale
-        global_mag_min_db = 20 * np.log10(global_amp_min + epsilon)
-        global_mag_max_db = 20 * np.log10(global_amp_max + epsilon)
+        # Convert global unscaled amplitude parameters to dB scale with float32
+        global_mag_min_db = np.float32(20) * np.log10(np.float32(global_amp_min) + epsilon_f32)
+        global_mag_max_db = np.float32(20) * np.log10(np.float32(global_amp_max) + epsilon_f32)
         
         if verbose:
             local_min = VH_mag.min()
             local_max = VH_mag.max()
-            print(f"Local amplitude range (dB): [{local_min:.3f}, {local_max:.3f}]")
-            print(f"Global unscaled amplitude range: [{global_amp_min:.6f}, {global_amp_max:.6f}]")
-            print(f"Global amplitude range (dB): [{global_mag_min_db:.3f}, {global_mag_max_db:.3f}]")
+            print(f"Amplitude range after scaling (dB): [{local_min:.3f}, {local_max:.3f}]")
         
         # Apply global normalisation using dB-scaled bounds
         VH_mag -= global_mag_min_db
         VH_mag /= (global_mag_max_db - global_mag_min_db)
-        
+
+        if verbose:
+            # Check how many values are out of bounds before clipping
+            out_of_bounds = (VH_mag < 0) | (VH_mag > 1)
+            clipped_count = np.sum(out_of_bounds)
+
         # Clip values to [0, 1] range to handle out-of-range values
-        np.clip(VH_mag, 0.0, 1.0, out=VH_mag)
+        np.clip(VH_mag, np.float32(0.0), np.float32(1.0), out=VH_mag)
         
         if verbose:
             final_min = VH_mag.min()
             final_max = VH_mag.max()
-            print(f"Final amplitude range: [{final_min:.3f}, {final_max:.3f}]")
-            clipped_count = np.sum((VH_mag == 0.0) | (VH_mag == 1.0))
+            print(f"Final amplitude range after normalisation: [{final_min:.3f}, {final_max:.3f}]")
+
             if clipped_count > 0:
-                print(f"Clipped {clipped_count} values ({clipped_count/VH_mag.size*100:.1f}%) to [0,1] range")
+                print(f"Clipped {clipped_count} out-of-range values ({clipped_count/VH_mag.size*100:.1f}%) to [0,1] range")
+
     else:
         # Use adaptive normalisation
         mag_min = VH_mag.min()
@@ -165,99 +169,24 @@ def _process_amplitude_inplace(complex_data, epsilon=1e-6, verbose=False,
     return VH_mag
 
 
-def _process_phase_inplace(complex_data, verbose=False, 
-                         use_global_norm=False, global_phase_min=None, global_phase_max=None):
+def _process_phase_sincos_inplace(complex_data, verbose=False):
     """
-    Process phase in-place to minimise memory usage.
+    Process phase into sine/cosine components and normalise to [0, 1] range.
+    Normalisation is automatic - no global parameters needed.
     """
-    # Extract phase
+    # Extract phase (automatically float32 from complex64)
     VH_phase = np.angle(complex_data)
     
-    if use_global_norm:
-        # Use global normalisation parameters
-        if verbose:
-            local_min = VH_phase.min()
-            local_max = VH_phase.max()
-            print(f"Local phase range: [{local_min:.6f}, {local_max:.6f}]")
-            print(f"Applying global phase normalisation: [{global_phase_min:.6f}, {global_phase_max:.6f}]")
-        
-        # Convert phase from [-pi, pi] to [0, 2pi] for easier handling
-        VH_phase = np.mod(VH_phase + np.pi, 2*np.pi)
-        
-        # Convert global parameters from (-π, π] to [0, 2π) equivalent
-        global_phase_min_2pi = global_phase_min + np.pi
-        global_phase_max_2pi = global_phase_max + np.pi
-        
-        # Apply global normalisation
-        VH_phase -= global_phase_min_2pi
-        VH_phase /= (global_phase_max_2pi - global_phase_min_2pi)
-        
-        # Clip values to [0, 1] range
-        np.clip(VH_phase, 0.0, 1.0, out=VH_phase)
-        
-        if verbose:
-            final_min = VH_phase.min()
-            final_max = VH_phase.max()
-            print(f"Final phase range: [{final_min:.3f}, {final_max:.3f}]")
-            clipped_count = np.sum((VH_phase == 0.0) | (VH_phase == 1.0))
-            if clipped_count > 0:
-                print(f"Clipped {clipped_count} values ({clipped_count/VH_phase.size*100:.1f}%) to [0,1] range")
-    else:
-        # Use adaptive phase normalisation (single image-based statistics)
-        phase_min = VH_phase.min()
-        phase_max = VH_phase.max()
-        tolerance = 1e-6
-        
-        if verbose:
-            print(f"Raw phase range: [{phase_min:.10f}, {phase_max:.10f}]")
-        
-        # Determine the legitimate range based on data distribution
-        if phase_min >= -tolerance and phase_max <= (2*np.pi + tolerance):
-            # Data appears to be in [0, 2pi] range (with floating-point errors)
-            legitimate_range = "[0, 2pi]"
-            
-            # Clean up floating-point precision issues in-place
-            np.clip(VH_phase, 0, 2*np.pi, out=VH_phase)
-            VH_phase /= (2*np.pi)
-            
-            if verbose:
-                print(f"Detected {legitimate_range} range, applied direct normalisation")
-                if phase_max > 2*np.pi:
-                    print(f"Corrected floating-point error: max {phase_max:.10f} → 2pi")
-        
-        elif phase_min >= (-np.pi - tolerance) and phase_max <= (np.pi + tolerance):
-            # Data appears to be in [-pi, pi] range (with floating-point errors)
-            legitimate_range = "[-pi, pi]"
-            
-            # Clean up floating-point precision issues in-place
-            np.clip(VH_phase, -np.pi, np.pi, out=VH_phase)
-            VH_phase += np.pi
-            VH_phase /= (2*np.pi)
-            
-            if verbose:
-                print(f"Detected {legitimate_range} range, applied shift-then-divide normalisation")
-                if phase_max > np.pi:
-                    print(f"Corrected floating-point error: max {phase_max:.10f} → pi")
-                if phase_min < -np.pi:
-                    print(f"Corrected floating-point error: min {phase_min:.10f} → -pi")
-        
-        else:
-            # Truly unexpected range - this indicates a real data issue
-            if verbose:
-                print(f"Warning: Unexpected phase range [{phase_min:.6f}, {phase_max:.6f}]")
-                print("This may indicate upstream processing issues")
-            
-            # Force wrap to [-pi, pi] and normalise in-place
-            # Use temporary array only for the wrapping operation
-            wrapped_phase = np.angle(np.exp(1j * VH_phase))
-            VH_phase[:] = wrapped_phase  # Copy back in-place
-            VH_phase += np.pi
-            VH_phase /= (2*np.pi)
-        
-        if verbose:
-            print(f"VH_phase_norm range: [{np.min(VH_phase):.3f}, {np.max(VH_phase):.3f}]")
+    # Convert to sine and cosine components with float32 constants
+    VH_phase_sin = (np.sin(VH_phase) + np.float32(1)) / np.float32(2)
+    VH_phase_cos = (np.cos(VH_phase) + np.float32(1)) / np.float32(2)
     
-    return VH_phase
+    if verbose:
+        print(f"Phase sine range: [{VH_phase_sin.min():.3f}, {VH_phase_sin.max():.3f}]")
+        print(f"Phase cosine range: [{VH_phase_cos.min():.3f}, {VH_phase_cos.max():.3f}]")
+        print(f"Output dtype: {VH_phase_sin.dtype}")
+    
+    return VH_phase_sin, VH_phase_cos
 
 
 def _interpolate_chunked(slc_data, valid_mask, chunk_size=1000, verbose=False):
@@ -320,27 +249,27 @@ def validate_global_norm_params(params, verbose=False):
     Parameters:
     -----------
     params : list of float
-        [amp_min, amp_max, phase_min, phase_max]
+        [amp_min, amp_max] (phase normalisation is automatic via sine/cosine)
     
     Returns:
     --------
     bool
         True if parameters are valid
     """
-    if len(params) != 4:
-        print(f"Error: global-norm-params requires exactly 4 values, got {len(params)}")
+    if len(params) != 2:
+        print(f"Error: global-norm-params requires exactly 2 values (amp_min, amp_max), got {len(params)}")
         return False
     
-    amp_min, amp_max, phase_min, phase_max = params
+    amp_min, amp_max = params
     
     # Validate amplitude parameters (unscaled, must be non-negative)
     if amp_min < 0 or amp_max <= 0:
         print(f"Error: amplitude parameters must be non-negative with amp_max > 0, got [{amp_min:.6f}, {amp_max:.6f}]")
         return False
     
-    # Handle amp_min = 0.0 case (convert to small positive value to avoid log(0))
+    # Handle amp_min = 0.0 case with float32-appropriate value
     if amp_min == 0.0:
-        amp_min = 1e-10 # Use a very small positive value
+        amp_min = 1e-6  # Float32-safe value, consistent with default epsilon
         params[0] = amp_min  # Update the original list
         if verbose:
             print(f"Note: amp_min of 0.0 converted to {amp_min:.2e} to avoid log(0) issues")
@@ -349,19 +278,10 @@ def validate_global_norm_params(params, verbose=False):
         print(f"Error: amp_min ({amp_min:.6f}) must be less than amp_max ({amp_max:.6f})")
         return False
     
-    # Validate phase parameters (should be in (-π, π] range)
-    if phase_min <= -np.pi or phase_max > np.pi:
-        print(f"Error: phase parameters must be in (-π, π] range, got [{phase_min:.6f}, {phase_max:.6f}]")
-        return False
-    
-    if phase_min >= phase_max:
-        print(f"Error: phase_min ({phase_min:.6f}) must be less than phase_max ({phase_max:.6f})")
-        return False
-    
     if verbose:
         print("Global normalisation parameters validated successfully:")
         print(f"  Amplitude (unscaled): [{amp_min:.6f}, {amp_max:.6f}]")
-        print(f"  Phase (rad): [{phase_min:.6f}, {phase_max:.6f}]")
+        print("  Phase normalisation: automatic via sine/cosine transformation")
     
     return True
 
@@ -379,7 +299,7 @@ def load_array(input_path, verbose=False):
         if verbose:
             print(f"Array shape: {data.shape}")
             print(f"Array dtype: {data.dtype}")
-            print(f"Array size: {data.size} elements ({data.nbytes / 1024**2:.1f} MB)")
+            print(f"Array size: {data.size} elements ({data.nbytes / 1024:.1f} KB)")
         
         # Validate that it's complex data
         if not np.iscomplexobj(data):
@@ -420,7 +340,7 @@ def save_processed_array(processed_data, input_path, output_dir, verbose=False):
             print(f"Saving processed array to: {output_path}")
             print(f"Output shape: {processed_data.shape}")
             print(f"Output dtype: {processed_data.dtype}")
-            print(f"Output size: {processed_data.nbytes / 1024**2:.1f} MB")
+            print(f"Output size: {processed_data.nbytes / 1024:.1f} KB")
         
         np.save(output_path, processed_data)
         print(f"Successfully saved: {output_path}")
@@ -432,7 +352,7 @@ def save_processed_array(processed_data, input_path, output_dir, verbose=False):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Process complex-valued SAR data into normalised 3-channel format",
+        description="Process complex-valued SAR data into normalised 3-channel format for YOLO",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -440,14 +360,14 @@ Examples:
   %(prog)s data.npy --output-dir processed/
   %(prog)s data.npy --nan-strategy zero --verbose
   %(prog)s data.npy --output-dir results/ --nan-strategy interpolate --epsilon 1e-8
-  %(prog)s data.npy --global-norm-params 0.001 50.2 -3.14159 3.14159 --verbose
-  %(prog)s data.npy --global-norm-params 0.005 25.0 -2.5 2.5 --output-dir processed/
+  %(prog)s data.npy --global-norm-params 0.001 50.2 --verbose
+  %(prog)s data.npy --global-norm-params 0.005 25.0 --output-dir processed/
 
 Global Normalisation:
-  The --global-norm-params option takes 4 values: [amp_min, amp_max, phase_min, phase_max]
+  The --global-norm-params option takes 2 values: [amp_min, amp_max]
   - amp_min/max: Unscaled amplitude values (will be converted to dB scale internally)
-  - phase_min/max: Phase values in radians, must be in (-π, π] range
-  Use this option to ensure consistent normalisation across multiple SAR images.
+  - Phase normalisation is automatic via sine/cosine transformation to [0, 1] range
+  Use this option to ensure consistent amplitude normalisation across multiple SAR images.
         """
     )
     
@@ -478,11 +398,12 @@ Global Normalisation:
     
     parser.add_argument(
         '--global-norm-params',
-        nargs=4,
+        nargs=2,
         type=float,
-        metavar=('AMP_MIN', 'AMP_MAX', 'PHASE_MIN', 'PHASE_MAX'),
-        help='Global normalisation parameters: amp_min amp_max phase_min phase_max. '
-             'Amplitude values are unscaled (converted to dB internally), phase values in (-π, π] radians.'
+        metavar=('AMP_MIN', 'AMP_MAX'),
+        help='Global normalisation parameters: amp_min amp_max. '
+             'Amplitude values are unscaled (converted to dB internally). '
+             'Phase normalisation is automatic via sine/cosine transformation.'
     )
     
     parser.add_argument(
@@ -506,7 +427,7 @@ Global Normalisation:
     # Load input array
     if args.verbose:
         print("=" * 60)
-        print("SAR Complex Data Scaling and Normalisation")
+        print("SAR Complex Data Scaling and Normalisation for YOLO")
         print("=" * 60)
     
     slc_data = load_array(args.input_array, args.verbose)
@@ -516,9 +437,7 @@ Global Normalisation:
         print("\nProcessing data...")
         print(f"NaN strategy: {args.nan_strategy}")
         print(f"Epsilon: {args.epsilon}")
-        if args.global_norm_params is not None:
-            print("Using global normalisation parameters")
-        else:
+        if args.global_norm_params is None:
             print("Using adaptive normalisation")
     
     processed_data = process_complex_data(
@@ -542,6 +461,10 @@ Global Normalisation:
     
     if args.verbose:
         print("\nProcessing completed successfully!")
+        print(f"Output format: {processed_data.shape} (channels, height, width)")
+        print(f"Output dtype: {processed_data.dtype}")
+        print("Channels: [0] Amplitude, [1] Phase Sine, [2] Phase Cosine")
+        print(f"Memory usage: {processed_data.nbytes / 1024**2:.1f} MB")
 
 
 if __name__ == "__main__":
