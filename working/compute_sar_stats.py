@@ -3,19 +3,21 @@
 compute_sar_stats.py
 
 Author: Peter Millitz
-Date: 06/06/2025
+Date: 21/06/2025
 
 usage: compute_sar_stats.py [-h]
                             [--pattern {slc-vh, slc-vv, grd-vh, grd-vv}]
-                            [--save-array] [-q(uiet)] [--validate-files]
+                            [--save-array] [--correspondence-file PATH] 
+                            [-q(uiet)] 
                             root_path 
 
 Recursively searches for all GeoTIFF files under a given root directory whose filename
 contains any one pattern in ["slc-vh", "slc-vv", "grd-vh", "grd-vv"] and ends with ".tiff".
 For each matching file, the SLC or GRD data is unpacked into a NumPy array and a range of
-statistics computed. Optionally, the extracted array can be saved for later use.  Each tiff
+statistics computed. Optionally, the extracted array can be saved for later use. Each tiff
 file's statistics are inserted as a new row into a dataframe which is saved to a CSV file
-named "{pattern}_stats.csv", on exit.
+named "{pattern}_stats.csv", on exit. The correspondence file is used for mapping scene ids
+with image tiffs.
 """
 
 import argparse
@@ -162,6 +164,12 @@ def find_matching_files(root_path: Path, mode: str) -> list[Path]:
     pattern = f"*{mode}*.tiff"
     return list(root_path.rglob(pattern))
 
+def create_error_row(tiff_path: Path) -> dict:
+    """Create a minimal row for files that couldn't be processed."""
+    parent_dir = tiff_path.parent.parent.name
+    filename_with_ext = tiff_path.name
+    return {"safe_directory": parent_dir, "filename": filename_with_ext}
+
 def process_one_file(tiff_path: Path, mode: str, save_array: bool) -> dict:
     """
     Process a single TIFF file with optimised statistics computation and robust error handling.
@@ -175,35 +183,23 @@ def process_one_file(tiff_path: Path, mode: str, save_array: bool) -> dict:
     signal.alarm(300)  # 5 minute timeout per file
     
     try:
-        # Load the GeoTIFF file with additional error checking
-        loaded = None
-        data = None
-        
+        # Load the GeoTIFF file
         try:
             loaded = load_GeoTiff(str(tiff_path))
         except Exception as load_error:
             print(f"*** Error loading {tiff_path.name}: {load_error}")
-            # Create separate safe_directory and filename for error cases
-            parent_dir = tiff_path.parent.parent.name
-            filename_with_ext = tiff_path.name
-            return {"safe_directory": parent_dir, "filename": filename_with_ext}
+            return create_error_row(tiff_path)
         
         if not loaded or loaded[0] is None:
             print(f"*** Warning: load_GeoTiff returned None for {tiff_path.name}. Skipping stats.")
-            # Create separate safe_directory and filename for error cases
-            parent_dir = tiff_path.parent.parent.name
-            filename_with_ext = tiff_path.name
-            return {"safe_directory": parent_dir, "filename": filename_with_ext}
+            return create_error_row(tiff_path)
 
         data = loaded[0]
         
         # Validate the data array
         if data is None or data.size == 0:
             print(f"*** Warning: Empty or invalid data array for {tiff_path.name}")
-            # Create separate safe_directory and filename for error cases
-            parent_dir = tiff_path.parent.parent.name
-            filename_with_ext = tiff_path.name
-            return {"safe_directory": parent_dir, "filename": filename_with_ext}
+            return create_error_row(tiff_path)
 
         if save_array:
             out_npy = Path.cwd() / f"{tiff_path.stem}.npy"
@@ -214,7 +210,6 @@ def process_one_file(tiff_path: Path, mode: str, save_array: bool) -> dict:
                 print(f"*** Warning: failed to save array for {tiff_path.name}: {e}")
 
         # Compute statistics using relevant function
-        stats_dict = None
         if "grd" in mode:
             stats_dict = grd_stats(data)
             stats_name = "grd_stats"
@@ -222,17 +217,13 @@ def process_one_file(tiff_path: Path, mode: str, save_array: bool) -> dict:
             stats_dict = slc_stats(data)
             stats_name = "slc_stats" 
 
-        # Delete the current input array to free memory immediately
-        del data
-        del loaded
-        gc.collect()  # Force garbage collection
+        # Clean up memory
+        del data, loaded
+        gc.collect()
 
         if stats_dict is None:
             print(f"*** Warning: {stats_name} returned None for {tiff_path.name}.")
-            # Create separate safe_directory and filename for error cases
-            parent_dir = tiff_path.parent.parent.name
-            filename_with_ext = tiff_path.name
-            return {"safe_directory": parent_dir, "filename": filename_with_ext}
+            return create_error_row(tiff_path)
 
         # Extract safe directory name and filename separately
         parent_dir = tiff_path.parent.parent.name  # Get the .SAFE directory name
@@ -243,35 +234,21 @@ def process_one_file(tiff_path: Path, mode: str, save_array: bool) -> dict:
         row.update(stats_dict)
         return row
         
-    except TimeoutError as e:
-        print(f"*** Timeout error processing {tiff_path.name}: {e}")
-        # Create separate safe_directory and filename for error cases
-        parent_dir = tiff_path.parent.parent.name
-        filename_with_ext = tiff_path.name
-        return {"safe_directory": parent_dir, "filename": filename_with_ext}
-    except MemoryError as e:
-        print(f"*** Memory error processing {tiff_path.name}: {e}")
-        # Create separate safe_directory and filename for error cases
-        parent_dir = tiff_path.parent.parent.name
-        filename_with_ext = tiff_path.name
-        return {"safe_directory": parent_dir, "filename": filename_with_ext}
-    except Exception as e:
-        print(f"*** Error processing {tiff_path.name}: {e}")
-        # Create separate safe_directory and filename for error cases
-        parent_dir = tiff_path.parent.parent.name
-        filename_with_ext = tiff_path.name
-        return {"safe_directory": parent_dir, "filename": filename_with_ext}
+    except (TimeoutError, MemoryError, Exception) as e:
+        error_type = type(e).__name__
+        print(f"*** {error_type} processing {tiff_path.name}: {e}")
+        return create_error_row(tiff_path)
     finally:
         # Clean up and disable alarm
         signal.alarm(0)
-        try:
-            if 'data' in locals() and data is not None:
-                del data
-            if 'loaded' in locals() and loaded is not None:
-                del loaded
-            gc.collect()
-        except:
-            pass
+        # Force cleanup of any remaining variables
+        for var_name in ['data', 'loaded']:
+            if var_name in locals() and locals()[var_name] is not None:
+                try:
+                    del locals()[var_name]
+                except:
+                    pass
+        gc.collect()
 
 def process_files(tiff_files: list[Path], mode: str, save_array: bool, 
                   quiet: bool = False) -> list[dict]:
@@ -294,6 +271,42 @@ def process_files(tiff_files: list[Path], mode: str, save_array: bool,
             print(f"Finished {tiff_path.name} in {elapsed:.2f} seconds.\n")
     
     return rows
+
+def add_scene_id(df: pd.DataFrame, corr_df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """
+    Add scene_id column to dataframe using correspondence file.
+    Returns the updated dataframe and count of missing mappings.
+    """
+    # Create mapping dictionary based on mode
+    # Determine if we're processing SLC or GRD files
+    if 'SLC_product_identifier' in corr_df.columns and 'GRD_product_identifier' in corr_df.columns:
+        # Create combined mapping - try SLC first, then GRD
+        slc_mapping = corr_df.set_index('SLC_product_identifier')['scene_id'].to_dict()
+        grd_mapping = corr_df.set_index('GRD_product_identifier')['scene_id'].to_dict()
+        
+        # Combine mappings
+        mapping_dict = {**slc_mapping, **grd_mapping}
+    elif 'SLC_product_identifier' in corr_df.columns:
+        mapping_dict = corr_df.set_index('SLC_product_identifier')['scene_id'].to_dict()
+    elif 'GRD_product_identifier' in corr_df.columns:
+        mapping_dict = corr_df.set_index('GRD_product_identifier')['scene_id'].to_dict()
+    else:
+        print("Warning: No SLC or GRD product identifier columns found in correspondence file")
+        mapping_dict = {}
+    
+    # Remove .SAFE suffix and map to scene_id
+    safe_dirs_clean = df['safe_directory'].str.replace('.SAFE', '', regex=False)
+    scene_ids = safe_dirs_clean.map(mapping_dict)
+    
+    # Insert scene_id as first column
+    df.insert(0, 'scene_id', scene_ids)
+    
+    # Count and report missing mappings
+    missing_count = scene_ids.isnull().sum()
+    if missing_count > 0:
+        print(f"Warning: {missing_count} rows could not be mapped to scene_id")
+    
+    return df, missing_count
 
 def main():
     parser = argparse.ArgumentParser(
@@ -322,22 +335,23 @@ def main():
         help="If set, save each loaded array to a .npy file named <tiff_stem>.npy"
     )
     parser.add_argument(
+        "--correspondence-file",
+        type=Path,
+        default="xView3_SLC_GRD_correspondences.csv",
+        help="Path to the correspondence CSV file for scene_id mapping (default: correspondences.csv)"
+    )
+    parser.add_argument(
         "-q", "--quiet",
         action="store_true",
         help="Suppress per-file progress messages; only warnings and final summary are shown"
     )
-    parser.add_argument(
-        "--validate-files",
-        action="store_true",
-        help="Pre-validate TIFF files before processing (slower but more robust)"
-    )
-    
+   
     args = parser.parse_args()
     root_path = args.root_path
     mode = args.pattern
     save_array = args.save_array
+    correspondence_file = args.correspondence_file
     quiet = args.quiet
-    validate_files = args.validate_files
 
     if not root_path.is_dir():
         parser.error(f"Provided root_path ({root_path}) is not a directory or does not exist.")
@@ -358,36 +372,12 @@ def main():
     if not quiet:
         print(f"Found {total_files} matching files")
 
-    # Pre-validate files if requested
-    if validate_files:
-        if not quiet:
-            print("Pre-validating TIFF files...")
-        valid_files = []
-        for tiff_path in tiff_files:
-            try:
-                # Quick validation - try to open without loading full data
-                from osgeo import gdal
-                gdal.UseExceptions()
-                ds = gdal.Open(str(tiff_path))
-                if ds is not None:
-                    valid_files.append(tiff_path)
-                    ds = None
-                else:
-                    print(f"*** Skipping invalid file: {tiff_path.name}")
-            except Exception as e:
-                print(f"*** Skipping corrupted file {tiff_path.name}: {e}")
-        
-        tiff_files = valid_files
-        if not quiet:
-            print(f"Pre-validation complete: {len(tiff_files)}/{total_files} files are valid")
-        total_files = len(tiff_files)
-
     # Process files
     start_time = time.time()
     rows = process_files(tiff_files, mode, save_array, quiet)
     processing_time = time.time() - start_time
 
-    # Build pandas DataFrame with predefined columns (safe_directory added as first column)
+    # Build pandas DataFrame with predefined columns
     columns = [
         "safe_directory",
         "filename",
@@ -418,12 +408,28 @@ def main():
     ]
 
     df = pd.DataFrame(rows, columns=columns)
+    
+    # Load correspondence table and add scene_id
+    try:
+        if correspondence_file.exists():
+            corr_df = pd.read_csv(correspondence_file)
+            df_with_scene, missing_count = add_scene_id(df, corr_df)
+        else:
+            print(f"Warning: Correspondence file '{correspondence_file}' not found. Proceeding without scene_id mapping.")
+            df_with_scene = df
+            missing_count = len(df)
+    except Exception as e:
+        print(f"Warning: Error processing correspondence file '{correspondence_file}': {e}. Proceeding without scene_id mapping.")
+        df_with_scene = df  
+        missing_count = len(df)
 
     # Save the DataFrame as a CSV file
     output_csv = Path.cwd() / f"{mode}_stats.csv"
-    df.to_csv(output_csv, index=False)
-    
+    df_with_scene.to_csv(output_csv, index=False)
+
     print(f"Stats for {len(df)} file(s) written to: {output_csv}")
+    if 'missing_count' in locals() and missing_count > 0:
+        print(f"Note: {missing_count} files could not be mapped to scene_id")
     print(f"Total processing time: {processing_time:.2f} seconds")
     if total_files > 0:
         print(f"Average time per file: {processing_time/total_files:.2f} seconds")
@@ -431,4 +437,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
