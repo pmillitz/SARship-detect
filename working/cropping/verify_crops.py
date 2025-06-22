@@ -1,17 +1,25 @@
 #!/usr/bin/env python3
 
-# verify_crops_complex.py
+"""
+verify_crops_complex.py
+
+Author: Peter Millitz
+Created: 2025-06-20
+
 # ----------------------------------------------------------------------
 # Visualizes 2D complex64 SAR image crops stored as .npy files with optional
 # YOLO-format bounding box overlays. 
 #
 # Navigation:
-#  ->  : move to next crop
-#  <-  : move to previous crop
-#  Esc : exit the viewer
+#   → : next crop
+#   ← : previous crop
+#   ↑ : next display mode
+#   ↓ : previous display mode
+#   Esc : quit
 #
 # The viewer uses a persistent figure window to maintain screen position.
 # ----------------------------------------------------------------------
+"""
 
 import numpy as np
 import matplotlib
