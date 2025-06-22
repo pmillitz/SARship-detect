@@ -216,7 +216,8 @@ def process_sequential(files: List[Path], config: SARProcessingConfig) -> Tuple[
     errors = []
     
     for i, file_path in enumerate(files, 1):
-        print(f"\n[{i}/{len(files)}] Processing: {file_path.name}")
+        if config.verbose:
+            print(f"\n[{i}/{len(files)}] Processing: {file_path.name}")
         
         success, message = process_single_file(file_path, config)
         
@@ -278,7 +279,8 @@ def process_parallel(files: List[Path], config: SARProcessingConfig) -> Tuple[in
                 
                 if success:
                     successful += 1
-                    print(f"[{i}/{len(files)}] ✓ {message}")
+                    if config.verbose:
+                        print(f"[{i}/{len(files)}] ✓ {message}")
                 else:
                     failed += 1
                     errors.append(message)
