@@ -22,7 +22,7 @@ from pathlib import Path
 
 def extract_crop_coords(centre_row, centre_col, crop_size, img_height, img_width):
     """
-    Compute the bounding box for a square crop centreed on (centre_row, centre_col),
+    Compute the bounding box for a square crop centred on (centre_row, centre_col),
     ensuring the crop stays within image bounds.
     
     Returns:
