@@ -181,12 +181,12 @@ def visualise_crop(crop_path, label_path=None, title=None, display_mode='magnitu
                     # Label with class name positioned off NW corner of BBox
                     label_str = "is_fishing" if int(class_id) == 1 else "is_vessel"
                     label_x = box_x - 2   # 2 pixels left
-                    label_y = box_y + box_h
+                    label_y = box_y
                     ax.text(
                         label_x, label_y, label_str,
                         color='lime',
                         fontsize=10,
-                        verticalalignment='bottom',  # Top of label aligns with (x, y)
+                        verticalalignment='top',     # Top of label aligns with (x, y)
                         horizontalalignment='right'  # Right end of label aligns with (x, y)
                     )
 
