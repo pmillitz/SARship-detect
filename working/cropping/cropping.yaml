@@ -1,10 +1,12 @@
-xView3_SLC_GRD_correspondences_path: /home/peterm/CITS5014/SARFish/working/labels/xView3_SLC_GRD_correspondences.csv
+xView3_SLC_GRD_correspondences_path: /home/peterm/CITS5014/SARFish/working/xView3_SLC_GRD_correspondences.csv
 annotations_path: /home/peterm/CITS5014/SARFish/working/labels/validation/SLC/SLC_validation_labels.csv
 product_type: SLC
 arrays_path: /mnt/h/SARFish/SLC/validation/arrays/
-
+#arrays_path: /mnt/h/SARFish/SLC/staging/
 CREATE_CROP:
     CropPath: /mnt/h/SARFish/SLC/validation/extracted_crops/
-    CropSize: 64 
+    #CropPath: /mnt/h/SARFish/SLC/staging/
+    CropSize: 96 
     LabelConfidence: ['HIGH', 'MEDIUM']
+    QuietMode: true
     
