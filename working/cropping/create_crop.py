@@ -4,39 +4,15 @@
 create_crop.py
 
 Author: Peter Millitz
-Created: 2025-06-24
+Created: 2025-06-25
 
 This script extracts image crops of a given size from raw 2D SAR image arrays based on vessel
 detection annotations and outputs them as NumPy arrays (.npy) with the same shape, along with
 YOLO-style (.txt) label files. Accommodates duplicate detections in swath overlap zones and
-uses a padding strategy for edge cases where the detection centre is located close to an image
-boundary, ensuring detection centres are always centred in crops. Zero padding is used as the
-default value for complex64 SAR data. The crop size and label confidence level is specified
-via the cropping.yaml file. A summary CSV file listing the total number of crops created from
-each scene is also output along with comprehensive logging of padding and boundary box issues.
-"""
-#!/usr/bin/env python3
-
-"""
-create_crop.py - Padding Version
-
-Author: Peter Millitz
-Created: 2025-06-17
-Modified: 2025-06-24 - Added padding strategy for boundary handling
-
-This script extracts image crops of a given size from raw 2D SAR image arrays
-based on vessel detection annotations and outputs them as NumPy arrays (.npy)
-with the same shape, along with YOLO-style (.txt) label files. The crop size
-and label confidence level is specified via the cropping.yaml file. A summary
-CSV file listing the total number of crops created from each scene, is also
-output. Accommodates duplicate detections in swath overlap zones.
-
-Padding Version Changes:
-- Replaced shifting strategy with padding strategy for boundary handling
-- Detection centers are now always centered in crops
-- Added comprehensive logging for padding and boundary box issues
-- Uses zero padding (pad_value=0) for complex64 SAR data
-
+uses a padding strategy for edge cases where a detection centre is close to an image boundary.
+Zero padding is used as the default value for complex64 SAR data. The crop size, label
+confidence level and other parameters are specified via the cropping.yaml file. A summary CSV
+file listing processing statisitcs for each input image, is also output.
 """
 
 import pandas as pd
@@ -137,10 +113,10 @@ def process_crop(ann, img_array, crop_size, out_img_dir, out_lbl_dir, swath_idx,
         quiet_mode (bool): if True, suppress detailed output messages
     
     Returns:
-        dict: {'success': bool, 'padded': bool, 'bbox_clipped': bool} - processing results
+        dict: {'success': bool, 'padded': bool, 'skipped': bool} - processing results
     """
     # Initialize return values
-    result = {'success': False, 'padded': False, 'bbox_clipped': False}
+    result = {'success': False, 'padded': False, 'skipped': False, 'shrunk': False}
     
     detect_id = ann['detect_id']
     
@@ -185,7 +161,7 @@ def process_crop(ann, img_array, crop_size, out_img_dir, out_lbl_dir, swath_idx,
         if metadata['padding_applied']:
             pad_top, pad_bottom, pad_left, pad_right = metadata['padding_amounts']
             if not quiet_mode:
-                print(f"  Warning: Padding applied to {detect_id}")
+                print(f"Warning: Padding applied to {detect_id}")
             result['padded'] = True
         
         # Validate crop size
@@ -211,21 +187,42 @@ def process_crop(ann, img_array, crop_size, out_img_dir, out_lbl_dir, swath_idx,
         box_top_in_crop = float(ann["bottom"]) - actual_top + pad_top  # inverted Y
         box_bottom_in_crop = float(ann["top"]) - actual_top + pad_top  # inverted Y
         
-        # Check if bounding box extends outside crop (this should be rare)
+        # Check if bounding box extends outside crop
         bbox_outside_crop = (box_left_in_crop < 0 or box_top_in_crop < 0 or 
                            box_right_in_crop > crop_size or box_bottom_in_crop > crop_size)
         
         if bbox_outside_crop:
-            if not quiet_mode:
-                print(f"  Warning: Bounding box extends outside crop for {detect_id}")
-            result['bbox_clipped'] = True
-            # Continue processing but flag this case
+            # Try to shrink the bounding box by up to 5 pixels on each problematic edge
+            shrunk_left = max(0, box_left_in_crop)
+            shrunk_top = max(0, box_top_in_crop)
+            shrunk_right = min(crop_size, box_right_in_crop)
+            shrunk_bottom = min(crop_size, box_bottom_in_crop)
             
-        # Clamp bounding box to crop boundaries for YOLO format calculation
-        box_left_in_crop = max(0, min(crop_size, box_left_in_crop))
-        box_right_in_crop = max(0, min(crop_size, box_right_in_crop))
-        box_top_in_crop = max(0, min(crop_size, box_top_in_crop))
-        box_bottom_in_crop = max(0, min(crop_size, box_bottom_in_crop))
+            # Check if shrinking was within the 5-pixel limit on each edge
+            left_shrink = box_left_in_crop - shrunk_left
+            top_shrink = box_top_in_crop - shrunk_top
+            right_shrink = shrunk_right - box_right_in_crop
+            bottom_shrink = shrunk_bottom - box_bottom_in_crop
+            
+            max_shrink_exceeded = (abs(left_shrink) > 5 or abs(top_shrink) > 5 or 
+                                 abs(right_shrink) > 5 or abs(bottom_shrink) > 5)
+            
+            if max_shrink_exceeded:
+                if not quiet_mode:
+                    print(f"Warning: Skipping {detect_id} - bounding box too large for crop")
+                result['skipped'] = True
+                return result
+            
+            # Bounding box was successfully shrunk within limits
+            if not quiet_mode:
+                print(f"Warning: Bounding box shrunk for {detect_id} (within 5 pixels/edge)")
+            result['shrunk'] = True
+            
+            # Use the shrunk bounding box
+            box_left_in_crop = shrunk_left
+            box_top_in_crop = shrunk_top
+            box_right_in_crop = shrunk_right
+            box_bottom_in_crop = shrunk_bottom
             
         # Convert to YOLO format (normalized xc, yc, w, h)
         xc = (box_left_in_crop + box_right_in_crop) / 2 / crop_size
@@ -260,8 +257,8 @@ def process_crop(ann, img_array, crop_size, out_img_dir, out_lbl_dir, swath_idx,
             status_flags = []
             if result['padded']:
                 status_flags.append("PADDED")
-            if result['bbox_clipped']:
-                status_flags.append("BBOX_CLIPPED")
+            if result['shrunk']:
+                status_flags.append("SHRUNK")
             
             status_str = f" [{', '.join(status_flags)}]" if status_flags else ""
             if not quiet_mode:
@@ -436,7 +433,8 @@ def main():
     summary = []  # to collect counts of saved crops per scene
     total_processed = 0
     total_padded = 0
-    total_bbox_clipped = 0
+    total_shrunk = 0
+    total_skipped = 0
     images_with_no_crops = 0
     saved_filenames = set()  # Track all filenames to catch duplicates
 
@@ -488,47 +486,38 @@ def main():
 
         scene_crop_count = 0
         scene_padded_count = 0
-        scene_bbox_clipped_count = 0
-        scene_padding_details = []
-        scene_clipping_details = []
+        scene_shrunk_count = 0
+        scene_skipped_count = 0
         
         for _, ann in scene_annotations.iterrows():
             result = process_crop(ann, img_array, crop_size, out_img_dir, out_lbl_dir, swath_idx, saved_filenames, quiet_mode)
             if result['success']:
                 scene_crop_count += 1
                 total_processed += 1
-                
                 if result['padded']:
                     scene_padded_count += 1
                     total_padded += 1
-                    # Get padding details from the annotation processing
-                    crop, metadata = create_padded_crop(img_array, 
-                                                      int(ann.get("detect_scene_row", (ann["top"] + ann["bottom"]) / 2)),
-                                                      int(ann.get("detect_scene_column", (ann["left"] + ann["right"]) / 2)),
-                                                      crop_size, pad_value=0)
-                    pad_top, pad_bottom, pad_left, pad_right = metadata['padding_amounts']
-                    scene_padding_details.append(f"{ann['detect_id']}: top={pad_top},bottom={pad_bottom},left={pad_left},right={pad_right}")
-                
-                if result['bbox_clipped']:
-                    scene_bbox_clipped_count += 1
-                    total_bbox_clipped += 1
-                    # Get clipping details
-                    centre_row = int(ann.get("detect_scene_row", (ann["top"] + ann["bottom"]) / 2))
-                    centre_col = int(ann.get("detect_scene_column", (ann["left"] + ann["right"]) / 2))
-                    scene_clipping_details.append(f"{ann['detect_id']}: center=({centre_row},{centre_col}),bbox=({ann['left']},{ann['top']},{ann['right']},{ann['bottom']})")
+                if result['shrunk']:
+                    scene_shrunk_count += 1
+                    total_shrunk += 1
+            elif result['skipped']:
+                scene_skipped_count += 1
+                total_skipped += 1
 
-        if scene_crop_count > 0:
+        if scene_crop_count > 0 or scene_skipped_count > 0:
             summary.append({
                 "scene_id": scene_id, 
                 "array_file": npy_file.name, 
                 "num_crops": scene_crop_count,
                 "num_padded": scene_padded_count,
-                "num_bbox_clipped": scene_bbox_clipped_count,
-                "padding_details": "; ".join(scene_padding_details) if scene_padding_details else "",
-                "clipping_details": "; ".join(scene_clipping_details) if scene_clipping_details else ""
+                "num_shrunk": scene_shrunk_count,
+                "num_skipped": scene_skipped_count
             })
             if not quiet_mode:
-                print(f"  -> Successfully created {scene_crop_count} crops")
+                status_msg = f"Successfully created {scene_crop_count} crops"
+                if scene_skipped_count > 0:
+                    status_msg += f", skipped {scene_skipped_count} crops"
+                print(f"  -> {status_msg}")
         else:
             images_with_no_crops += 1
             if not quiet_mode:
@@ -546,12 +535,13 @@ def main():
     print(f"Images with no crops created: {images_with_no_crops}")
     #print(f"Images with crops created: {len(npy_files) - images_with_no_crops}")
     print(f"Crops with padding applied: {total_padded}")
-    print(f"Crops with bounding box clipping: {total_bbox_clipped}")
+    print(f"Crops with bounding box shrunk: {total_shrunk}")
+    print(f"Crops skipped (bounding box exceeds crop boundary): {total_skipped}")
     print(f"Actual image files written: {actual_image_count}")
     print(f"Actual label files written: {actual_label_count}")
     #print(f"Unique filenames processed: {len(saved_filenames)}")
     print(f"Padding strategy: Zero padding (pad_value=0) for complex64 SAR data")
-    
+     
     if total_processed != actual_image_count:
         print(f"MISMATCH: Expected {total_processed} images but found {actual_image_count}")
     if actual_image_count != actual_label_count:
@@ -562,7 +552,7 @@ def main():
         summary_df = pd.DataFrame(summary)
         summary_df.to_csv(crop_path / "crop_summary.csv", index=False)
         print(f"Crop summary saved to: {crop_path / 'crop_summary.csv'}")
-        #print(f"Total crops processed: {total_processed}")
+        print(f"Total crops processed: {total_processed}")
     else:
         print("No crops were created.")
 
