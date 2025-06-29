@@ -1,0 +1,25 @@
+create_crop:
+  correspondences_path: /home/peterm/CITS5014/SARFish/working/xView3_SLC_GRD_correspondences.csv
+  annotations_path: /home/peterm/CITS5014/SARFish/working/labels/validation/SLC/SLC_validation_labels.csv
+  product_type: SLC
+  arrays_path: /mnt/h/SARFish/Generated/SLC/train/arrays_raw/
+  CREATE_CROP:
+      CropPath: /mnt/h/SARFish/Generated/SLC/train/crops/
+      CropSize: 96
+      LabelConfidence: ['HIGH', 'MEDIUM']
+      QuietMode: True
+
+batch_sar_processing:
+  input_dir: '/mnt/h/SARFish/Generated/SLC/train/crops/images/'
+  output_dir: '/mnt/h/SARFish/Generated/SLC/train/crops/images_proc/'
+  script_path: 'complex_scale_and_norm.py'
+  nan_strategy: 'skip'
+  epsilon: 1e-6
+  verbose: False
+  global_norm_params: [0.0, 22862.6]  # or null for adaptive
+  max_workers: 4  # or null for sequential
+  file_pattern: '*.npy'
+  skip_existing: True
+  log_file: 'batch_sar_processing.log'  # or null to disable
+
+
