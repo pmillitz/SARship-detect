@@ -3,11 +3,12 @@
 compute_sar_stats.py
 
 Author: Peter Millitz
-Date: 21/06/2025
+Created: 2025-06-28
 
 usage: compute_sar_stats.py [-h]
                             [--pattern {slc-vh, slc-vv, grd-vh, grd-vv}]
                             [--save-array] [--correspondence-file PATH] 
+                            [--include-scene-ids PATH]
                             [-q(uiet)] 
                             root_path 
 
@@ -17,7 +18,7 @@ For each matching file, the SLC or GRD data is unpacked into a NumPy array and a
 statistics computed. Optionally, the extracted array can be saved for later use. Each tiff
 file's statistics are inserted as a new row into a dataframe which is saved to a CSV file
 named "{pattern}_stats.csv", on exit. The correspondence file is used for mapping scene ids
-with image tiffs.
+with image tiffs. An optional inclusion list can be used to process only specific scene_ids.
 """
 
 import argparse
@@ -26,10 +27,9 @@ from pathlib import Path
 import gc
 import os
 import signal
-
+import random
 import pandas as pd
 import numpy as np
-
 from GeoTiff import load_GeoTiff
 
 # Compute statistics for SLC product
@@ -156,13 +156,25 @@ def grd_stats(array):
     
     return stats_dict
 
-def find_matching_files(root_path: Path, mode: str) -> list[Path]:
+def find_matching_files(root_path: Path, mode: str, included_safe_dirs: set = None) -> list[Path]:
     """
     Walk through `root_path` recursively and return a list of all file Paths
     whose names contain `mode` (e.g. "slc-vh") and end with ".tiff".
+    Only include files whose safe_directory is in the inclusion set.
     """
     pattern = f"*{mode}*.tiff"
-    return list(root_path.rglob(pattern))
+    
+    if included_safe_dirs is None:
+        return list(root_path.rglob(pattern))
+    
+    # Only process files whose safe_directory is in the inclusion set
+    filtered_files = []
+    for tiff_path in root_path.rglob(pattern):
+        safe_dir = tiff_path.parent.parent.name.replace('.SAFE', '')
+        if safe_dir in included_safe_dirs:
+            filtered_files.append(tiff_path)
+    
+    return filtered_files
 
 def create_error_row(tiff_path: Path) -> dict:
     """Create a minimal row for files that couldn't be processed."""
@@ -170,7 +182,7 @@ def create_error_row(tiff_path: Path) -> dict:
     filename_with_ext = tiff_path.name
     return {"safe_directory": parent_dir, "filename": filename_with_ext}
 
-def process_one_file(tiff_path: Path, mode: str, save_array: bool) -> dict:
+def process_one_file(tiff_path: Path, mode: str, save_array_path: Path) -> dict:
     """
     Process a single TIFF file with optimised statistics computation and robust error handling.
     """
@@ -201,11 +213,13 @@ def process_one_file(tiff_path: Path, mode: str, save_array: bool) -> dict:
             print(f"*** Warning: Empty or invalid data array for {tiff_path.name}")
             return create_error_row(tiff_path)
 
-        if save_array:
-            out_npy = Path.cwd() / f"{tiff_path.stem}.npy"
+        if save_array_path:
+            # Create output directory if it doesn't exist
+            save_array_path.mkdir(parents=True, exist_ok=True)
+            out_npy = save_array_path / f"{tiff_path.stem}.npy"
             try:
                 np.save(str(out_npy), data)
-                print(f"Array saved as: {out_npy.name}")
+                print(f"Array saved as: {out_npy}")
             except Exception as e:
                 print(f"*** Warning: failed to save array for {tiff_path.name}: {e}")
 
@@ -250,7 +264,7 @@ def process_one_file(tiff_path: Path, mode: str, save_array: bool) -> dict:
                     pass
         gc.collect()
 
-def process_files(tiff_files: list[Path], mode: str, save_array: bool, 
+def process_files(tiff_files: list[Path], mode: str, save_array_path: Path, 
                   quiet: bool = False) -> list[dict]:
     """
     Process files sequentially.
@@ -263,7 +277,7 @@ def process_files(tiff_files: list[Path], mode: str, save_array: bool,
             print(f"Processing file {idx}/{total_files}: {tiff_path.name}")
             start_time = time.time()
         
-        row = process_one_file(tiff_path, mode, save_array)
+        row = process_one_file(tiff_path, mode, save_array_path)
         rows.append(row)
 
         if not quiet:
@@ -331,8 +345,8 @@ def main():
     )
     parser.add_argument(
         "--save-array",
-        action="store_true",
-        help="If set, save each loaded array to a .npy file named <tiff_stem>.npy"
+        type=Path,
+        help="Path to directory where .npy files will be saved. If not provided, arrays are not saved."
     )
     parser.add_argument(
         "--correspondence-file",
@@ -345,27 +359,73 @@ def main():
         action="store_true",
         help="Suppress per-file progress messages; only warnings and final summary are shown"
     )
+    parser.add_argument(
+        "--include-scene-ids",
+        type=Path,
+        help="Path to a text file containing scene_ids to include (one per line). If not provided, all files are processed."
+    )
    
     args = parser.parse_args()
     root_path = args.root_path
     mode = args.pattern
-    save_array = args.save_array
+    save_array_path = args.save_array
     correspondence_file = args.correspondence_file
     quiet = args.quiet
 
     if not root_path.is_dir():
         parser.error(f"Provided root_path ({root_path}) is not a directory or does not exist.")
 
+    # Load inclusion list if provided
+    included_scene_ids = None
+    if args.include_scene_ids:
+        if args.include_scene_ids.exists():
+            try:
+                with open(args.include_scene_ids, 'r') as f:
+                    included_scene_ids = {line.strip() for line in f if line.strip()}
+                if not quiet:
+                    print(f"Loaded {len(included_scene_ids)} scene IDs to include")
+            except Exception as e:
+                print(f"Warning: Error reading inclusion file: {e}")
+                included_scene_ids = None
+        else:
+            print(f"Warning: Inclusion file '{args.include_scene_ids}' not found")
+
+    # Convert included scene_ids to safe_directory names for filtering
+    included_safe_dirs = None
+    if included_scene_ids and correspondence_file.exists():
+        try:
+            corr_df = pd.read_csv(correspondence_file)
+            included_safe_dirs = set()
+            
+            # Map scene_ids to safe_directory names
+            for _, row in corr_df.iterrows():
+                scene_id = row['scene_id']
+                if scene_id in included_scene_ids:
+                    if 'SLC_product_identifier' in corr_df.columns and pd.notna(row['SLC_product_identifier']):
+                        safe_name = row['SLC_product_identifier'].replace('.SAFE', '')
+                        included_safe_dirs.add(safe_name)
+                    if 'GRD_product_identifier' in corr_df.columns and pd.notna(row['GRD_product_identifier']):
+                        safe_name = row['GRD_product_identifier'].replace('.SAFE', '')
+                        included_safe_dirs.add(safe_name)
+                        
+            if not quiet:
+                print(f"Mapped to {len(included_safe_dirs)} safe directories to include")
+        except Exception as e:
+            print(f"Warning: Error loading correspondence file for filtering: {e}")
+            included_safe_dirs = None
+
     print("Processing...")
 
     # Find all matching files
     if not quiet:
-        print(f"Searching for files matching '*{mode}*.tiff' under {root_path}")
+        filter_msg = f" (filtered by inclusion list)" if included_safe_dirs else ""
+        print(f"Searching for files matching '*{mode}*.tiff' under {root_path}{filter_msg}")
     
-    tiff_files = find_matching_files(root_path, mode)
+    tiff_files = find_matching_files(root_path, mode, included_safe_dirs)
 
     if not tiff_files:
-        print(f"No files matching '*{mode}*.tiff' found under {root_path}")
+        filter_msg = " matching inclusion criteria" if included_safe_dirs else ""
+        print(f"No files{filter_msg} matching '*{mode}*.tiff' found under {root_path}")
         return
 
     total_files = len(tiff_files)
@@ -374,7 +434,7 @@ def main():
 
     # Process files
     start_time = time.time()
-    rows = process_files(tiff_files, mode, save_array, quiet)
+    rows = process_files(tiff_files, mode, save_array_path, quiet)
     processing_time = time.time() - start_time
 
     # Build pandas DataFrame with predefined columns
@@ -409,10 +469,11 @@ def main():
 
     df = pd.DataFrame(rows, columns=columns)
     
-    # Load correspondence table and add scene_id
+    # Load correspondence table and add scene_id (reuse existing dataframe if already loaded)
     try:
         if correspondence_file.exists():
-            corr_df = pd.read_csv(correspondence_file)
+            if 'corr_df' not in locals():
+                corr_df = pd.read_csv(correspondence_file)
             df_with_scene, missing_count = add_scene_id(df, corr_df)
         else:
             print(f"Warning: Correspondence file '{correspondence_file}' not found. Proceeding without scene_id mapping.")
