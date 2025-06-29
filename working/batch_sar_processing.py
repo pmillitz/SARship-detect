@@ -4,11 +4,11 @@
 batch_sar_processing.py
 
 Author: Peter Millitz
-Created: 2025-06-20
+Created: 2025-06-29
 
-This module contains a set of functions for batch processesing all .npy files
-in a directory using the complex_scale_and_norm.py script. Contains a number of
-flexible configuration options.
+Batch processing for SAR data. Processes all .npy files in a directory
+using the complex_scale_and_norm.py script. Processing parameters are 
+are referenced from a separate YAML file ('config.yaml').
 """
 
 import os
@@ -16,54 +16,108 @@ import subprocess
 import sys
 from pathlib import Path
 import time
+import yaml
 from typing import Optional, List, Tuple
-import glob
 
-# Configuration
-class SARProcessingConfig:
-    def __init__(self):
-        # Directory paths
-        self.input_dir = "data/sar_crops"  # Directory containing .npy files
-        self.output_dir = "data/processed_crops"  # Output directory
-        self.script_path = "complex_scale_and_norm.py"  # Path to the processing script
-        
-        # Processing parameters
-        self.nan_strategy = "skip"  # Options: 'skip', 'zero', 'mean', 'interpolate'
-        self.epsilon = 1e-6
-        self.verbose = True
-        
-        # Global normalisation parameters (set to None for adaptive normalisation)
-        # Format: [amp_min, amp_max] (phase normalization is automatic via sine/cosine)
-        self.global_norm_params = None  # Example: [0.001, 50.2]
-        
-        # Processing options
-        self.max_workers = None  # Number of parallel processes (None = sequential)
-        self.file_pattern = "*.npy"  # File pattern to match
-        self.skip_existing = True  # Skip files that already have processed outputs
-        
-    def validate(self):
-        import numpy as np
-        """Validate configuration parameters"""
-        if not os.path.exists(self.input_dir):
-            raise ValueError(f"Input directory does not exist: {self.input_dir}")
-        
-        if not os.path.exists(self.script_path):
-            raise ValueError(f"Processing script not found: {self.script_path}")
-        
-        if self.global_norm_params is not None:
-            if len(self.global_norm_params) != 2:
-                raise ValueError("global_norm_params must have exactly 2 values (amp_min, amp_max)")
 
-            amp_min, amp_max = self.global_norm_params
-            
-            # Handle amp_min = 0.0 case with float32-appropriate value
-            if amp_min == 0.0:
-                self.global_norm_params[0] = 1e-6  # Float32-safe value
-                amp_min = 1e-6
-            
-            # Validate amplitude parameters
-            if amp_min < 0 or amp_max <= 0 or amp_min >= amp_max:
-                raise ValueError("Invalid amplitude parameters: amp_min must be non-negative, amp_max > 0, and amp_min < amp_max")
+def load_config(config_file: str = "config.yaml") -> dict:
+    """
+    Load configuration from YAML file.
+    
+    Parameters:
+    -----------
+    config_file : str
+        Path to YAML configuration file
+    
+    Returns:
+    --------
+    dict
+        Configuration dictionary
+    """
+    default_config = {
+        'input_dir': 'data/sar_crops',
+        'output_dir': 'data/processed_crops',
+        'script_path': 'complex_scale_and_norm.py',
+        'nan_strategy': 'skip',
+        'epsilon': 1e-6,
+        'verbose': True,
+        'global_norm_params': None,
+        'max_workers': None,
+        'file_pattern': '*.npy',
+        'skip_existing': True,
+        'log_file': None
+    }
+    
+    if os.path.exists(config_file):
+        with open(config_file, 'r') as f:
+            uni_config = yaml.safe_load(f) or {}
+        
+        user_config = uni_config['batch_sar_processing']
+        
+        # Merge with defaults
+        config = {**default_config, **user_config}
+        print(f"✓ Configuration loaded from: {config_file}")
+    else:
+        config = default_config
+        print(f"✓ Using default configuration (no {config_file} found)")
+    
+    return config
+
+
+def validate_config(config: dict) -> bool:
+    """
+    Validate configuration parameters.
+    
+    Parameters:
+    -----------
+    config : dict
+        Configuration dictionary
+    
+    Returns:
+    --------
+    bool
+        True if configuration is valid
+    """
+    if not os.path.exists(config['input_dir']):
+        print(f"✗ Input directory does not exist: {config['input_dir']}")
+        return False
+    
+    if not os.path.exists(config['script_path']):
+        print(f"✗ Processing script not found: {config['script_path']}")
+        return False
+    
+    if config['global_norm_params'] is not None:
+        if len(config['global_norm_params']) != 2:
+            print(f"✗ global_norm_params must have exactly 2 values (amp_min, amp_max), got {len(config['global_norm_params'])}")
+            return False
+
+        amp_min, amp_max = config['global_norm_params']
+        
+        # Handle amp_min = 0.0 case with float32-appropriate value
+        if amp_min == 0.0:
+            config['global_norm_params'][0] = 1e-6
+            amp_min = 1e-6
+        
+        # Validate amplitude parameters
+        if amp_min < 0 or amp_max <= 0 or amp_min >= amp_max:
+            print(f"✗ Invalid amplitude parameters: amp_min must be non-negative, amp_max > 0, and amp_min < amp_max")
+            return False
+    
+    return True
+
+
+def setup_logging(config: dict):
+    """Set up logging configuration"""
+    if config['log_file']:
+        import logging
+        logging.basicConfig(
+            filename=config['log_file'],
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            filemode='w'
+        )
+        return logging.getLogger()
+    return None
 
 
 def find_sar_files(input_dir: str, pattern: str = "*.npy") -> List[Path]:
@@ -75,7 +129,7 @@ def find_sar_files(input_dir: str, pattern: str = "*.npy") -> List[Path]:
     input_dir : str
         Directory to search for files
     pattern : str
-        File pattern to match (default: "*.npy")
+        File pattern to match
     
     Returns:
     --------
@@ -84,7 +138,7 @@ def find_sar_files(input_dir: str, pattern: str = "*.npy") -> List[Path]:
     """
     input_path = Path(input_dir)
     files = list(input_path.glob(pattern))
-    files.sort()  # Sort for consistent processing order
+    files.sort()
     
     print(f"Found {len(files)} files matching pattern '{pattern}' in {input_dir}")
     
@@ -92,181 +146,149 @@ def find_sar_files(input_dir: str, pattern: str = "*.npy") -> List[Path]:
 
 
 def get_output_path(input_file: Path, output_dir: str) -> Path:
-    """
-    Generate output path for processed file.
-    
-    Parameters:
-    -----------
-    input_file : Path
-        Input file path
-    output_dir : str
-        Output directory
-    
-    Returns:
-    --------
-    Path
-        Expected output file path
-    """
+    """Generate output path for processed file."""
     output_path = Path(output_dir)
     output_filename = f"{input_file.stem}_proc.npy"
     return output_path / output_filename
 
 
-def build_command(input_file: Path, config: SARProcessingConfig) -> List[str]:
-    """
-    Build command line arguments for the processing script.
-    
-    Parameters:
-    -----------
-    input_file : Path
-        Input file to process
-    config : SARProcessingConfig
-        Configuration object
-    
-    Returns:
-    --------
-    List[str]
-        Command line arguments
-    """
+def build_command(input_file: Path, config: dict) -> List[str]:
+    """Build command line arguments for the processing script."""
     cmd = [
-        sys.executable,  # Use same Python interpreter
-        config.script_path,
+        sys.executable,
+        config['script_path'],
         str(input_file),
-        "--output-dir", config.output_dir,
-        "--nan-strategy", config.nan_strategy,
-        "--epsilon", str(config.epsilon)
+        "--output-dir", config['output_dir'],
+        "--nan-strategy", config['nan_strategy'],
+        "--epsilon", str(config['epsilon'])
     ]
     
-    if config.verbose:
+    if config['verbose']:
         cmd.append("--verbose")
     
-    if config.global_norm_params is not None:
-        cmd.extend(["--global-norm-params"] + [str(x) for x in config.global_norm_params])
+    if config['global_norm_params'] is not None:
+        cmd.extend(["--global-norm-params"] + [str(x) for x in config['global_norm_params']])
     
     return cmd
 
 
-def process_single_file(input_file: Path, config: SARProcessingConfig) -> Tuple[bool, str]:
-    """
-    Process a single SAR file.
-    
-    Parameters:
-    -----------
-    input_file : Path
-        Input file to process
-    config : SARProcessingConfig
-        Configuration object
-    
-    Returns:
-    --------
-    Tuple[bool, str]
-        (success, message)
-    """
+def process_single_file(input_file: Path, config: dict, logger=None) -> Tuple[bool, str]:
+    """Process a single SAR file."""
     try:
         # Check if output already exists
-        if config.skip_existing:
-            output_file = get_output_path(input_file, config.output_dir)
+        if config['skip_existing']:
+            output_file = get_output_path(input_file, config['output_dir'])
             if output_file.exists():
                 return True, f"Skipped (output exists): {input_file.name}"
         
         # Build and execute command
         cmd = build_command(input_file, config)
         
-        if config.verbose:
+        # Existing screen output (unchanged)
+        if config['verbose']:
             print(f"Processing: {input_file.name}")
             print(f"Command: {' '.join(cmd)}")
+        
+        # Additional logging
+        if logger:
+            logger.info(f"Processing: {input_file.name}")
+            logger.info(f"Command: {' '.join(cmd)}")
         
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=300  # 5 minute timeout per file
+            timeout=300
         )
         
+        # Log subprocess output
+        if logger:
+            if result.stdout:
+                logger.info(f"STDOUT: {result.stdout}")
+            if result.stderr:
+                logger.info(f"STDERR: {result.stderr}")
+            logger.info(f"Return code: {result.returncode}")
+        
         if result.returncode == 0:
-            return True, f"Success: {input_file.name}"
+            success_msg = f"Success: {input_file.name}"
+            if logger:
+                logger.info(success_msg)
+            return True, success_msg
         else:
             error_msg = result.stderr.strip() if result.stderr else "Unknown error"
-            return False, f"Failed: {input_file.name} - {error_msg}"
+            failure_msg = f"Failed: {input_file.name} - {error_msg}"
+            if logger:
+                logger.error(failure_msg)
+            return False, failure_msg
             
     except subprocess.TimeoutExpired:
-        return False, f"Timeout: {input_file.name}"
+        timeout_msg = f"Timeout: {input_file.name}"
+        if logger:
+            logger.error(timeout_msg)
+        return False, timeout_msg
     except Exception as e:
-        return False, f"Error: {input_file.name} - {str(e)}"
+        error_msg = f"Error: {input_file.name} - {str(e)}"
+        if logger:
+            logger.error(error_msg)
+        return False, error_msg
 
 
-def process_sequential(files: List[Path], config: SARProcessingConfig) -> Tuple[int, int, List[str]]:
-    """
-    Process files sequentially.
-    
-    Parameters:
-    -----------
-    files : List[Path]
-        List of files to process
-    config : SARProcessingConfig
-        Configuration object
-    
-    Returns:
-    --------
-    Tuple[int, int, List[str]]
-        (successful_count, failed_count, error_messages)
-    """
+def process_sequential(files: List[Path], config: dict, logger=None) -> Tuple[int, int, List[str]]:
+    """Process files sequentially."""
     successful = 0
     failed = 0
     errors = []
     
     for i, file_path in enumerate(files, 1):
-        if config.verbose:
+        if config['verbose']:
             print(f"\n[{i}/{len(files)}] Processing: {file_path.name}")
         
-        success, message = process_single_file(file_path, config)
+        if logger:
+            logger.info(f"Starting file {i}/{len(files)}: {file_path.name}")
+        
+        success, message = process_single_file(file_path, config, logger)
         
         if success:
             successful += 1
-            if config.verbose:
+            if config['verbose']:
                 print(f"✓ {message}")
         else:
             failed += 1
             errors.append(message)
-            print(f"✗ {message}")
+            print(f"✗ {message}")  # Always show errors
+    
+    if logger:
+        logger.info(f"Sequential processing completed: {successful} successful, {failed} failed")
     
     return successful, failed, errors
 
 
-def process_parallel(files: List[Path], config: SARProcessingConfig) -> Tuple[int, int, List[str]]:
-    """
-    Process files in parallel using multiprocessing.
-    
-    Parameters:
-    -----------
-    files : List[Path]
-        List of files to process
-    config : SARProcessingConfig
-        Configuration object
-    
-    Returns:
-    --------
-    Tuple[int, int, List[str]]
-        (successful_count, failed_count, error_messages)
-    """
+def process_parallel(files: List[Path], config: dict, logger=None) -> Tuple[int, int, List[str]]:
+    """Process files in parallel using multiprocessing."""
     try:
         from concurrent.futures import ProcessPoolExecutor, as_completed
     except ImportError:
         print("Warning: multiprocessing not available, falling back to sequential processing")
-        return process_sequential(files, config)
+        return process_sequential(files, config, logger)
     
     successful = 0
     failed = 0
     errors = []
     
-    max_workers = config.max_workers or min(4, os.cpu_count())
+    max_workers = config['max_workers'] or min(4, os.cpu_count())
     
-    print(f"Processing {len(files)} files using {max_workers} parallel workers...")
+    if config['verbose']:
+        print(f"Processing {len(files)} files using {max_workers} parallel workers...")
+    else:
+        print(f"Processing {len(files)} files with {max_workers} workers (verbose=False)...")
+    
+    if logger:
+        logger.info(f"Starting parallel processing with {max_workers} workers")
     
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         # Submit all jobs
         future_to_file = {
-            executor.submit(process_single_file, file_path, config): file_path 
+            executor.submit(process_single_file, file_path, config, logger): file_path 
             for file_path in files
         }
         
@@ -279,76 +301,103 @@ def process_parallel(files: List[Path], config: SARProcessingConfig) -> Tuple[in
                 
                 if success:
                     successful += 1
-                    if config.verbose:
+                    if config['verbose']:
                         print(f"[{i}/{len(files)}] ✓ {message}")
                 else:
                     failed += 1
                     errors.append(message)
-                    print(f"[{i}/{len(files)}] ✗ {message}")
+                    print(f"[{i}/{len(files)}] ✗ {message}")  # Always show errors
                     
             except Exception as e:
                 failed += 1
                 error_msg = f"Exception: {file_path.name} - {str(e)}"
                 errors.append(error_msg)
-                print(f"[{i}/{len(files)}] ✗ {error_msg}")
+                print(f"[{i}/{len(files)}] ✗ {error_msg}")  # Always show errors
+    
+    if logger:
+        logger.info(f"Parallel processing completed: {successful} successful, {failed} failed")
     
     return successful, failed, errors
 
 
-def batch_process_sar_data(config: SARProcessingConfig):
+def batch_process_sar_data(config_file: str = "config.yaml"):
     """
     Main function to batch process SAR data.
     
     Parameters:
     -----------
-    config : SARProcessingConfig
-        Configuration object
+    config_file : str
+        Path to YAML configuration file
     """
     print("=" * 60)
     print("Batch SAR Data Processing")
     print("=" * 60)
     
+    # Load configuration
+    config = load_config(config_file)
+    
+    # Setup logging
+    logger = setup_logging(config)
+    if logger:
+        print(f"✓ Logging enabled: {config['log_file']}")
+        logger.info("Batch SAR processing started")
+        logger.info(f"Configuration: {config}")
+    
     # Validate configuration
-    try:
-        config.validate()
-        print("✓ Configuration validated")
-    except ValueError as e:
-        print(f"✗ Configuration error: {e}")
+    if not validate_config(config):
         return
+    
+    print("✓ Configuration validated")
+    if logger:
+        logger.info("Configuration validated successfully")
     
     # Create output directory
-    os.makedirs(config.output_dir, exist_ok=True)
-    print(f"✓ Output directory: {config.output_dir}")
+    os.makedirs(config['output_dir'], exist_ok=True)
+    print(f"✓ Output directory: {config['output_dir']}")
+    if logger:
+        logger.info(f"Output directory created/verified: {config['output_dir']}")
     
     # Find input files
-    files = find_sar_files(config.input_dir, config.file_pattern)
+    files = find_sar_files(config['input_dir'], config['file_pattern'])
     
     if not files:
-        print("No files found to process!")
+        no_files_msg = "No files found to process!"
+        print(no_files_msg)
+        if logger:
+            logger.warning(no_files_msg)
         return
+    
+    if logger:
+        logger.info(f"Found {len(files)} files to process")
+        logger.info(f"Files: {[f.name for f in files]}")
     
     # Display configuration
     print(f"\nProcessing Configuration:")
-    print(f"  Input directory: {config.input_dir}")
-    print(f"  Output directory: {config.output_dir}")
-    print(f"  NaN strategy: {config.nan_strategy}")
-    print(f"  Epsilon: {config.epsilon}")
-    print(f"  Global normalisation: {'Yes' if config.global_norm_params else 'Adaptive'}")
-    if config.global_norm_params:
-        print(f"    Amplitude parameters: {config.global_norm_params}")
+    print(f"  Input directory: {config['input_dir']}")
+    print(f"  Output directory: {config['output_dir']}")
+    print(f"  NaN strategy: {config['nan_strategy']}")
+    print(f"  Epsilon: {config['epsilon']}")
+    print(f"  Global normalisation: {'Yes' if config['global_norm_params'] else 'Adaptive'}")
+    if config['global_norm_params']:
+        print(f"    Amplitude parameters: {config['global_norm_params']}")
         print(f"    Phase normalization: automatic via sine/cosine transformation")
-    print(f"  Parallel processing: {'Yes' if config.max_workers else 'Sequential'}")
-    print(f"  Skip existing: {config.skip_existing}")
+    print(f"  Parallel processing: {'Yes' if config['max_workers'] else 'Sequential'}")
+    print(f"  Skip existing: {config['skip_existing']}")
     
     # Start processing
     start_time = time.time()
     
-    if config.max_workers:
-        successful, failed, errors = process_parallel(files, config)
+    if logger:
+        logger.info("Starting batch processing")
+        logger.info(f"Start time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}")
+    
+    if config['max_workers']:
+        successful, failed, errors = process_parallel(files, config, logger)
     else:
-        successful, failed, errors = process_sequential(files, config)
+        successful, failed, errors = process_sequential(files, config, logger)
     
     end_time = time.time()
+    processing_time = end_time - start_time
     
     # Print summary
     print("\n" + "=" * 60)
@@ -357,7 +406,16 @@ def batch_process_sar_data(config: SARProcessingConfig):
     print(f"Total files: {len(files)}")
     print(f"Successful: {successful}")
     print(f"Failed: {failed}")
-    print(f"Processing time: {end_time - start_time:.2f} seconds")
+    print(f"Processing time: {processing_time:.2f} seconds")
+    
+    # Log summary
+    if logger:
+        logger.info("Batch processing completed")
+        logger.info(f"Total files: {len(files)}")
+        logger.info(f"Successful: {successful}")
+        logger.info(f"Failed: {failed}")
+        logger.info(f"Processing time: {processing_time:.2f} seconds")
+        logger.info(f"End time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_time))}")
     
     if errors:
         print(f"\nErrors encountered:")
@@ -365,111 +423,47 @@ def batch_process_sar_data(config: SARProcessingConfig):
             print(f"  - {error}")
         if len(errors) > 10:
             print(f"  ... and {len(errors) - 10} more errors")
+        
+        # Log all errors
+        if logger:
+            logger.info("Errors encountered:")
+            for error in errors:
+                logger.error(f"  {error}")
 
 
-# Example usage functions for Jupyter notebook
-
-def setup_basic_processing():
-    """Set up basic processing configuration"""
-    config = SARProcessingConfig()
-    config.input_dir = "data/sar_crops"
-    config.output_dir = "data/processed_crops"
-    config.nan_strategy = "skip"
-    config.verbose = True
-    config.skip_existing = True
-    return config
-
-
-def setup_global_norm_processing():
-    """Set up processing with global normalisation"""
-    config = SARProcessingConfig()
-    config.input_dir = "data/sar_crops"
-    config.output_dir = "data/processed_crops_global"
-    config.nan_strategy = "interpolate"
-    config.verbose = True
-    config.skip_existing = True
+def create_sample_config(filename: str = "config.yaml"):
+    """Create a sample configuration file."""
+    sample_config = {
+        'input_dir': 'data/sar_crops',
+        'output_dir': 'data/processed_crops',
+        'script_path': 'complex_scale_and_norm.py',
+        'nan_strategy': 'skip',
+        'epsilon': 1e-6,
+        'verbose': True,
+        'global_norm_params': None,  # [0.001, 50.2] for global normalization
+        'max_workers': None,  # 4 for parallel processing
+        'file_pattern': '*.npy',
+        'skip_existing': True,
+        'log_file': None  # 'processing.log' to enable logging
+    }
     
-    # Set global normalisation parameters
-    # [amp_min, amp_max] (phase normalization is automatic)
-    config.global_norm_params = [0.001, 50.2]
+    with open(filename, 'w') as f:
+        yaml.dump(sample_config, f, default_flow_style=False, sort_keys=False)
     
-    return config
+    print(f"Sample configuration created: {filename}")
 
 
-def setup_parallel_processing():
-    """Set up parallel processing configuration"""
-    config = SARProcessingConfig()
-    config.input_dir = "data/sar_crops"
-    config.output_dir = "data/processed_crops"
-    config.nan_strategy = "zero"
-    config.verbose = False  # Less verbose for parallel processing
-    config.skip_existing = True
-    config.max_workers = 4  # Use 4 parallel workers
+if __name__ == "__main__":
+    import argparse
     
-    return config
+    parser = argparse.ArgumentParser(description="Batch process SAR data")
+    parser.add_argument("--config", default="config.yaml", help="Configuration file (default: config.yaml)")
+    parser.add_argument("--create-config", action="store_true", help="Create sample configuration file")
+    
+    args = parser.parse_args()
+    
+    if args.create_config:
+        create_sample_config(args.config)
+    else:
+        batch_process_sar_data(args.config)
 
-
-# Quick start examples for Jupyter notebook
-
-def quick_process_adaptive():
-    """Quick start: Process all files with adaptive normalisation"""
-    config = setup_basic_processing()
-    batch_process_sar_data(config)
-
-
-def quick_process_global():
-    """Quick start: Process all files with global normalisation"""
-    config = setup_global_norm_processing()
-    batch_process_sar_data(config)
-
-
-def quick_process_parallel():
-    """Quick start: Process all files in parallel"""
-    config = setup_parallel_processing()
-    batch_process_sar_data(config)
-
-
-# Jupyter notebook example cells
-"""
-# =============================================================================
-# JUPYTER NOTEBOOK USAGE EXAMPLES
-# =============================================================================
-
-# Cell 1: Import and basic setup
-from batch_sar_processing import *
-
-# Cell 2: Quick processing with adaptive normalisation
-quick_process_adaptive()
-
-# Cell 3: Processing with global normalisation
-quick_process_global()
-
-# Cell 4: Parallel processing
-quick_process_parallel()
-
-# Cell 5: Custom configuration
-config = SARProcessingConfig()
-config.input_dir = "path/to/your/sar/crops"
-config.output_dir = "path/to/output"
-config.nan_strategy = "interpolate"
-config.global_norm_params = [0.005, 25.0]  # Only amplitude parameters needed
-config.max_workers = 2
-batch_process_sar_data(config)
-
-# Cell 6: Check specific directory contents
-files = find_sar_files("data/sar_crops")
-print(f"Found {len(files)} files to process")
-for f in files[:5]:  # Show first 5 files
-    print(f"  {f.name}")
-
-# Cell 7: Process only specific files
-config = setup_basic_processing()
-config.file_pattern = "subset_*.npy"  # Only process files starting with "subset_"
-batch_process_sar_data(config)
-
-# Cell 8: Global normalization with different amplitude ranges
-config = setup_basic_processing()
-config.global_norm_params = [0.01, 100.0]  # Different amplitude range
-config.output_dir = "data/processed_crops_custom"
-batch_process_sar_data(config)
-"""
