@@ -3,8 +3,8 @@
 """
 create_crop.py
 
-Author: Peter Millitz
-Created: 2025-06-25
+Author: Peter Mllitz
+Created: 2025-06-29
 
 This script extracts image crops of a given size from raw 2D SAR image arrays based on vessel
 detection annotations and outputs them as NumPy arrays (.npy) with the same shape, along with
@@ -19,6 +19,54 @@ import pandas as pd
 import numpy as np
 import yaml
 from pathlib import Path
+import sys
+from datetime import datetime
+
+class Logger:
+    """Logger class to handle both file and console output based on quiet mode."""
+    
+    def __init__(self, log_file_path, quiet_mode=False):
+        self.log_file_path = log_file_path
+        self.quiet_mode = quiet_mode
+        
+        # Open log file for writing
+        try:
+            self.log_file = open(log_file_path, 'w', encoding='utf-8')
+            # Write header to log file
+            self.log_file.write(f"Crop Processing Log - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            self.log_file.write("="*80 + "\n\n")
+            self.log_file.flush()
+        except Exception as e:
+            print(f"Warning: Could not create log file {log_file_path}: {e}")
+            self.log_file = None
+    
+    def print(self, message, force_screen=False):
+        """
+        Print message according to quiet mode settings and always log to file.
+        
+        Args:
+            message (str): Message to print/log
+            force_screen (bool): If True, always print to screen regardless of quiet mode
+        """
+        # Always write to log file if available
+        if self.log_file:
+            try:
+                self.log_file.write(message + "\n")
+                self.log_file.flush()
+            except Exception:
+                pass  # Silently continue if logging fails
+        
+        # Print to screen based on quiet mode or force_screen
+        if not self.quiet_mode or force_screen:
+            print(message)
+    
+    def close(self):
+        """Close the log file."""
+        if self.log_file:
+            try:
+                self.log_file.close()
+            except Exception:
+                pass
 
 def extract_crop_coords_with_padding(centre_row, centre_col, crop_size, img_height, img_width):
     """
@@ -96,7 +144,7 @@ def create_padded_crop(img_array, centre_row, centre_col, crop_size, pad_value=0
     
     return padded_crop, metadata
 
-def process_crop(ann, img_array, crop_size, out_img_dir, out_lbl_dir, swath_idx, saved_filenames=None, quiet_mode=False):
+def process_crop(ann, img_array, crop_size, out_img_dir, out_lbl_dir, swath_idx, saved_filenames=None, logger=None):
     """
     Process a single vessel annotation: create a cropped image (of size {crop_size}) centred on
     supplied vessel detection coordinates and save it along with a YOLO-style bounding box label.
@@ -110,7 +158,7 @@ def process_crop(ann, img_array, crop_size, out_img_dir, out_lbl_dir, swath_idx,
         out_lbl_dir (Path): output folder for YOLO label files
         swath_idx (int): swath index (1, 2, or 3)
         saved_filenames (set): set to track filenames for duplicate detection
-        quiet_mode (bool): if True, suppress detailed output messages
+        logger (Logger): logger instance for output
     
     Returns:
         dict: {'success': bool, 'padded': bool, 'skipped': bool} - processing results
@@ -126,16 +174,16 @@ def process_crop(ann, img_array, crop_size, out_img_dir, out_lbl_dir, swath_idx,
     # Check for duplicate filenames (shouldn't happen with swath info, but safety check)
     if saved_filenames is not None:
         if filename_base in saved_filenames:
-            if not quiet_mode:
-                print(f"Warning: Duplicate filename found: {filename_base} - this shouldn't happen!")
+            if logger:
+                logger.print(f"Warning: Duplicate filename found: {filename_base} - this shouldn't happen!")
             return result
         saved_filenames.add(filename_base)
 
     try:
         # Validate image shape
         if len(img_array.shape) != 2:
-            if not quiet_mode:
-                print(f"Error: Expected image shape (H, W), but got {img_array.shape} for {detect_id}")
+            if logger:
+                logger.print(f"Error: Expected image shape (H, W), but got {img_array.shape} for {detect_id}")
             return result
             
         H, W = img_array.shape
@@ -150,8 +198,8 @@ def process_crop(ann, img_array, crop_size, out_img_dir, out_lbl_dir, swath_idx,
 
         # Validate detection coordinates are within image bounds
         if not (0 <= centre_row < H and 0 <= centre_col < W):
-            if not quiet_mode:
-                print(f"Warning: Detection centre ({centre_row}, {centre_col}) outside image bounds ({H}, {W}) for {detect_id}")
+            if logger:
+                logger.print(f"Warning: Detection centre ({centre_row}, {centre_col}) outside image bounds ({H}, {W}) for {detect_id}")
             return result
 
         # Create padded crop with zero padding for complex64 SAR data
@@ -160,14 +208,14 @@ def process_crop(ann, img_array, crop_size, out_img_dir, out_lbl_dir, swath_idx,
         # Log padding information and track statistics
         if metadata['padding_applied']:
             pad_top, pad_bottom, pad_left, pad_right = metadata['padding_amounts']
-            if not quiet_mode:
-                print(f"Warning: Padding applied to {detect_id}")
+            if logger:
+                logger.print(f"Warning: Padding applied to {detect_id}")
             result['padded'] = True
         
         # Validate crop size
         if crop.shape[0] != crop_size or crop.shape[1] != crop_size:
-            if not quiet_mode:
-                print(f"Error: Crop size mismatch. Expected {crop_size}x{crop_size}, got {crop.shape[0]}x{crop.shape[1]} for {detect_id}")
+            if logger:
+                logger.print(f"Error: Crop size mismatch. Expected {crop_size}x{crop_size}, got {crop.shape[0]}x{crop.shape[1]} for {detect_id}")
             return result
 
         # Determine class: 0 = vessel, 1 = fishing vessel
@@ -208,14 +256,14 @@ def process_crop(ann, img_array, crop_size, out_img_dir, out_lbl_dir, swath_idx,
                                  abs(right_shrink) > 5 or abs(bottom_shrink) > 5)
             
             if max_shrink_exceeded:
-                if not quiet_mode:
-                    print(f"Warning: Skipping {detect_id} - bounding box too large for crop")
+                if logger:
+                    logger.print(f"Warning: Skipping {detect_id} - bounding box too large for crop")
                 result['skipped'] = True
                 return result
             
             # Bounding box was successfully shrunk within limits
-            if not quiet_mode:
-                print(f"Warning: Bounding box shrunk for {detect_id} (within 5 pixels/edge)")
+            if logger:
+                logger.print(f"Warning: Bounding box shrunk for {detect_id} (within 5 pixels/edge)")
             result['shrunk'] = True
             
             # Use the shrunk bounding box
@@ -232,8 +280,8 @@ def process_crop(ann, img_array, crop_size, out_img_dir, out_lbl_dir, swath_idx,
 
         # Additional validation for YOLO format
         if not (0 <= xc <= 1 and 0 <= yc <= 1 and 0 <= w <= 1 and 0 <= h <= 1):
-            if not quiet_mode:
-                print(f"Warning: YOLO coordinates out of range for {detect_id}: xc={xc:.3f}, yc={yc:.3f}, w={w:.3f}, h={h:.3f}")
+            if logger:
+                logger.print(f"Warning: YOLO coordinates out of range for {detect_id}: xc={xc:.3f}, yc={yc:.3f}, w={w:.3f}, h={h:.3f}")
 
         # Save .npy crop and .txt label using unique filename
         image_path = out_img_dir / f"{filename_base}.npy"
@@ -246,12 +294,12 @@ def process_crop(ann, img_array, crop_size, out_img_dir, out_lbl_dir, swath_idx,
             
             # Verify files were actually created
             if not image_path.exists():
-                if not quiet_mode:
-                    print(f"Error: Image file was not created: {image_path}")
+                if logger:
+                    logger.print(f"Error: Image file was not created: {image_path}")
                 return result
             if not label_path.exists():
-                if not quiet_mode:
-                    print(f"Error: Label file was not created: {label_path}")
+                if logger:
+                    logger.print(f"Error: Label file was not created: {label_path}")
                 return result
                 
             status_flags = []
@@ -261,33 +309,33 @@ def process_crop(ann, img_array, crop_size, out_img_dir, out_lbl_dir, swath_idx,
                 status_flags.append("SHRUNK")
             
             status_str = f" [{', '.join(status_flags)}]" if status_flags else ""
-            if not quiet_mode:
-                print(f"  Saved: {filename_base}{status_str}")
+            if logger:
+                logger.print(f"  Saved: {filename_base}{status_str}")
             result['success'] = True
             return result
             
         except Exception as save_error:
-            if not quiet_mode:
-                print(f"Error saving files for {filename_base}: {save_error}")
+            if logger:
+                logger.print(f"Error saving files for {filename_base}: {save_error}")
             return result
 
     except FileNotFoundError as e:
-        if not quiet_mode:
-            print(f"File not found for {detect_id}: {e}")
+        if logger:
+            logger.print(f"File not found for {detect_id}: {e}")
         return result
     except ValueError as e:
-        if not quiet_mode:
-            print(f"Data validation error for {detect_id}: {e}")
+        if logger:
+            logger.print(f"Data validation error for {detect_id}: {e}")
         return result
     except KeyError as e:
-        if not quiet_mode:
-            print(f"Missing required data field for {detect_id}: {e}")
+        if logger:
+            logger.print(f"Missing required data field for {detect_id}: {e}")
         return result
     except Exception as e:
-        if not quiet_mode:
+        if logger:
+            logger.print(f"Unexpected error processing {detect_id}: {e}")
             import traceback
-            print(f"Unexpected error processing {detect_id}: {e}")
-            traceback.print_exc()
+            logger.print(traceback.format_exc())
         return result
 
 def find_matching_array(filename_stem, correspondence_row):
@@ -344,19 +392,26 @@ def main():
           If true, suppress detailed processing output (default: false)
     -----------------------------------------------------------------------
     """
+    # Initialize logger first (in current directory)
+    logger = Logger("crops_log", quiet_mode=False)  # Will be updated with actual quiet_mode
+    
     # Load configuration from YAML
     try:
-        with open("/home/peterm/UWA/CITS5014/SARFish/working/cropping/cropping.yaml", "r") as f:
-            config = yaml.safe_load(f)
+        with open("/home/peterm/UWA/CITS5014/SARFish/working/config.yaml", "r") as f:
+            uni_config = yaml.safe_load(f)
+            config = uni_config['create_crop']
+
     except FileNotFoundError:
-        print("Error: cropping.yaml configuration file not found.")
+        logger.print("Error: config.yaml configuration file not found.", force_screen=True)
+        logger.close()
         return
     except yaml.YAMLError as e:
-        print(f"Error: Invalid YAML configuration file: {e}")
+        logger.print(f"Error: Invalid YAML configuration file: {e}", force_screen=True)
+        logger.close()
         return
 
     # Resolve paths and parameters from config
-    correspondence_path = Path(config["xView3_SLC_GRD_correspondences_path"])
+    correspondence_path = Path(config["correspondences_path"])
     annotation_path = Path(config["annotations_path"])
     arrays_path = Path(config["arrays_path"])
     crop_path = Path(config["CREATE_CROP"]["CropPath"])
@@ -364,24 +419,27 @@ def main():
     confidence_levels = config["CREATE_CROP"]["LabelConfidence"]
     quiet_mode = config["CREATE_CROP"].get("QuietMode", False)  # Default to False if not specified
     
+    # Update logger with correct quiet_mode setting
+    logger.quiet_mode = quiet_mode
+    
     # Ensure confidence_levels is a list
     if isinstance(confidence_levels, str):
         confidence_levels = [confidence_levels]
 
     # Check if required files and directories exist
     if not correspondence_path.exists():
-        if not quiet_mode:
-            print(f"Correspondence file not found: {correspondence_path}")
+        logger.print(f"Correspondence file not found: {correspondence_path}", force_screen=True)
+        logger.close()
         return
     
     if not annotation_path.exists():
-        if not quiet_mode:
-            print(f"Annotation file not found: {annotation_path}")
+        logger.print(f"Annotation file not found: {annotation_path}", force_screen=True)
+        logger.close()
         return
         
     if not arrays_path.exists():
-        if not quiet_mode:
-            print(f"Arrays directory not found: {arrays_path}")
+        logger.print(f"Arrays directory not found: {arrays_path}", force_screen=True)
+        logger.close()
         return
 
     # Create output subfolders for images and labels
@@ -395,8 +453,8 @@ def main():
         corr_df = pd.read_csv(correspondence_path)
         annotations = pd.read_csv(annotation_path)
     except Exception as e:
-        if not quiet_mode:
-            print(f"Error loading CSV files: {e}")
+        logger.print(f"Error loading CSV files: {e}", force_screen=True)
+        logger.close()
         return
 
     # Join correspondence and annotations on scene_id and SLC_product_identifier
@@ -407,8 +465,8 @@ def main():
             how='inner'
         )
     except Exception as e:
-        if not quiet_mode:
-            print(f"Error joining correspondence and annotation files: {e}")
+        logger.print(f"Error joining correspondence and annotation files: {e}", force_screen=True)
+        logger.close()
         return
 
     # Filter annotations based on criteria
@@ -419,15 +477,15 @@ def main():
     ].dropna(subset=["top", "left", "bottom", "right"])
 
     if filtered_annotations.empty:
-        if not quiet_mode:
-            print("No annotations found matching the specified criteria.")
+        logger.print("No annotations found matching the specified criteria.", force_screen=True)
+        logger.close()
         return
 
     # Get all .npy files in arrays directory
     npy_files = list(arrays_path.glob("*.npy"))
     if not npy_files:
-        if not quiet_mode:
-            print(f"No .npy files found in {arrays_path}")
+        logger.print(f"No .npy files found in {arrays_path}", force_screen=True)
+        logger.close()
         return
 
     summary = []  # to collect counts of saved crops per scene
@@ -438,9 +496,8 @@ def main():
     images_with_no_crops = 0
     saved_filenames = set()  # Track all filenames to catch duplicates
 
-    print(f"Processing {len(npy_files)} array files...")
-    if not quiet_mode:
-        print(f"Using zero padding (pad_value=0) for complex64 SAR data")
+    logger.print(f"Processing {len(npy_files)} array files...", force_screen=True)
+    logger.print(f"Using zero padding (pad_value=0) for complex64 SAR data")
 
     # Process each .npy file
     for npy_file in npy_files:
@@ -454,13 +511,11 @@ def main():
                 matching_rows.append((corr_row, swath_idx))
         
         if not matching_rows:
-            if not quiet_mode:
-                print(f"Warning: No correspondence entry found for array file: {npy_file.name}")
+            logger.print(f"Warning: No correspondence entry found for array file: {npy_file.name}")
             continue
             
         if len(matching_rows) > 1:
-            if not quiet_mode:
-                print(f"Warning: Multiple correspondence entries found for array file: {npy_file.name}")
+            logger.print(f"Warning: Multiple correspondence entries found for array file: {npy_file.name}")
             continue
             
         corr_row, swath_idx = matching_rows[0]
@@ -470,11 +525,9 @@ def main():
         # Load the array
         try:
             img_array = np.load(npy_file)
-            if not quiet_mode:
-                print(f"Processing {npy_file.name} (scene: {scene_id}, swath: {swath_idx})")
+            logger.print(f"Processing {npy_file.name} (scene: {scene_id}, swath: {swath_idx})")
         except Exception as e:
-            if not quiet_mode:
-                print(f"Error loading array file {npy_file}: {e}")
+            logger.print(f"Error loading array file {npy_file}: {e}")
             continue
 
         # Get annotations for this specific scene and swath
@@ -490,7 +543,7 @@ def main():
         scene_skipped_count = 0
         
         for _, ann in scene_annotations.iterrows():
-            result = process_crop(ann, img_array, crop_size, out_img_dir, out_lbl_dir, swath_idx, saved_filenames, quiet_mode)
+            result = process_crop(ann, img_array, crop_size, out_img_dir, out_lbl_dir, swath_idx, saved_filenames, logger)
             if result['success']:
                 scene_crop_count += 1
                 total_processed += 1
@@ -513,49 +566,47 @@ def main():
                 "num_shrunk": scene_shrunk_count,
                 "num_skipped": scene_skipped_count
             })
-            if not quiet_mode:
-                status_msg = f"Successfully created {scene_crop_count} crops"
-                if scene_skipped_count > 0:
-                    status_msg += f", skipped {scene_skipped_count} crops"
-                print(f"  -> {status_msg}")
+            status_msg = f"Successfully created {scene_crop_count} crops"
+            if scene_skipped_count > 0:
+                status_msg += f", skipped {scene_skipped_count} crops"
+            logger.print(f"  -> {status_msg}")
         else:
             images_with_no_crops += 1
-            if not quiet_mode:
-                print(f"  -> No crops created (all failed validation)")
+            logger.print(f"  -> No crops created (all failed validation)")
 
     # Final verification
     actual_image_count = len(list(out_img_dir.glob("*.npy")))
     actual_label_count = len(list(out_lbl_dir.glob("*.txt")))
     
-    print(f"\n" + "="*60)
-    print(f"PROCESSING SUMMARY")
-    print(f"="*60)
-    print(f"Number of input images processed: {len(npy_files)}")
-    print(f"Total crops of size {crop_size} x {crop_size} created: {total_processed}")
-    print(f"Images with no crops created: {images_with_no_crops}")
-    #print(f"Images with crops created: {len(npy_files) - images_with_no_crops}")
-    print(f"Crops with padding applied: {total_padded}")
-    print(f"Crops with bounding box shrunk: {total_shrunk}")
-    print(f"Crops skipped (bounding box exceeds crop boundary): {total_skipped}")
-    print(f"Actual image files written: {actual_image_count}")
-    print(f"Actual label files written: {actual_label_count}")
-    #print(f"Unique filenames processed: {len(saved_filenames)}")
-    print(f"Padding strategy: Zero padding (pad_value=0) for complex64 SAR data")
+    logger.print(f"\n" + "="*60, force_screen=True)
+    logger.print(f"PROCESSING SUMMARY", force_screen=True)
+    logger.print(f"="*60, force_screen=True)
+    logger.print(f"Number of input images processed: {len(npy_files)}", force_screen=True)
+    logger.print(f"Total crops of size {crop_size} x {crop_size} created: {total_processed}", force_screen=True)
+    logger.print(f"Images with no crops created: {images_with_no_crops}", force_screen=True)
+    logger.print(f"Crops with padding applied: {total_padded}", force_screen=True)
+    logger.print(f"Crops with bounding box shrunk: {total_shrunk}", force_screen=True)
+    logger.print(f"Crops skipped (bounding box exceeds crop boundary): {total_skipped}", force_screen=True)
+    logger.print(f"Actual image files written: {actual_image_count}", force_screen=True)
+    logger.print(f"Actual label files written: {actual_label_count}", force_screen=True)
+    logger.print(f"Padding strategy: Zero padding (pad_value=0) for complex64 SAR data", force_screen=True)
      
     if total_processed != actual_image_count:
-        print(f"MISMATCH: Expected {total_processed} images but found {actual_image_count}")
+        logger.print(f"MISMATCH: Expected {total_processed} images but found {actual_image_count}", force_screen=True)
     if actual_image_count != actual_label_count:
-        print(f"MISMATCH: Image count ({actual_image_count}) != Label count ({actual_label_count})")
+        logger.print(f"MISMATCH: Image count ({actual_image_count}) != Label count ({actual_label_count})", force_screen=True)
 
     # Save summary CSV
     if summary:
         summary_df = pd.DataFrame(summary)
         summary_df.to_csv(crop_path / "crop_summary.csv", index=False)
-        print(f"Crop summary saved to: {crop_path / 'crop_summary.csv'}")
-        print(f"Total crops processed: {total_processed}")
+        logger.print(f"Crop summary saved to: {crop_path / 'crop_summary.csv'}", force_screen=True)
+        logger.print(f"Total crops processed: {total_processed}", force_screen=True)
     else:
-        print("No crops were created.")
+        logger.print("No crops were created.", force_screen=True)
+
+    # Close the logger
+    logger.close()
 
 if __name__ == "__main__":
     main()
-
