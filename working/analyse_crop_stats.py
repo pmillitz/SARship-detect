@@ -4,7 +4,7 @@
 analyse_crop_stats.py
 
 Author: Peter Millitz
-Created: 2025-07-03
+Created: 2025-07-04
 
 """
 
@@ -14,19 +14,19 @@ from pathlib import Path
 import os
 from tqdm import tqdm
 
-def analyze_crop_statistics(base_dir, image_list=None, sample_size=None, 
+def analyse_crop_statistics(base_dir, image_list=None, sample_size=None, 
                           compute_log=True, compute_real=True, percentiles=[1, 5, 25, 50, 75, 95, 99]):
     """
-    Analyze statistics of SAR image crops to determine optimal normalization parameters.
+    Analyse statistics of SAR image crops to determine optimal normalisation parameters.
     
     Parameters:
     -----------
     base_dir : str
         Base directory containing 'images' subdirectory with .npy crop files
     image_list : list, optional
-        Specific list of image filenames to analyze. If None, analyzes all .npy files
+        Specific list of image filenames to analyse. If None, analyses all .npy files
     sample_size : int, optional
-        Maximum number of files to analyze (for speed). If None, analyzes all
+        Maximum number of files to analyse (for speed). If None, analyses all
     compute_log : bool
         Whether to compute log-magnitude statistics as well
     compute_real : bool
@@ -75,7 +75,7 @@ def analyze_crop_statistics(base_dir, image_list=None, sample_size=None,
         np.random.seed(42)  # For reproducible sampling
         file_paths = np.random.choice(file_paths, sample_size, replace=False)
     
-    print(f"Analyzing {len(file_paths)} crop files...")
+    print(f"Analysing {len(file_paths)} crop files...")
     
     # Collect all pixel values
     magnitude_values = []
@@ -181,7 +181,6 @@ def analyze_crop_statistics(base_dir, image_list=None, sample_size=None,
 
 def print_statistics_summary(stats):
     """Print a formatted summary of the statistics"""
-
     print("\n" + "="*60)
     print("SAR CROP STATISTICS SUMMARY")
     print("="*60)
@@ -219,9 +218,9 @@ def print_statistics_summary(stats):
         print(f"\n  Percentiles:")
         for p, val in stats['real_part']['percentiles'].items():
             print(f"    {p:2d}%: {val:8.2f}")
-     
+    
     print("\n" + "="*60)
-    print("RECOMMENDED NORMALIZATION PARAMETERS:")
+    print("RECOMMENDED NORMALISATION PARAMETERS:")
     print("="*60)
     
     # Recommendations based on percentiles
@@ -235,17 +234,17 @@ def print_statistics_summary(stats):
     if 'log_magnitude' in stats:
         log_99 = stats['log_magnitude']['percentiles'][99]
         log_1 = stats['log_magnitude']['percentiles'][1]
+        log_95 = stats['log_magnitude']['percentiles'][95]
+        log_5 = stats['log_magnitude']['percentiles'][5]
         
         print(f"\nFor LOG-MAGNITUDE (99% coverage):")
         print(f"  log_min = {log_1:.1f}")
         print(f"  log_max = {log_99:.1f}")
         
         print(f"\nFor LOG-MAGNITUDE (95% coverage - more conservative):")
-        log_95 = stats['log_magnitude']['percentiles'][95]
-        log_5 = stats['log_magnitude']['percentiles'][5]
         print(f"  log_min = {log_5:.1f}")
         print(f"  log_max = {log_95:.1f}")
-        
+
     if 'real_part' in stats:
         real_99 = stats['real_part']['percentiles'][99]
         real_1 = stats['real_part']['percentiles'][1]
@@ -337,16 +336,24 @@ def plot_distribution_analysis(stats, magnitude_values, log_magnitude_values=Non
         axes[1,plot_idx].legend()
     
     plt.tight_layout()
+    
+    # Add figure caption
+    total_pixels = stats['total_pixels']
+    fig.suptitle(f'Figure 3. Statistical distributions of SLC crop pixel values. Top row: relative frequency density distributions with 1st and 99th percentile markers (red dashed lines). '
+                 f' Bottom left: magnitude\n distribution on logarithmic y-axis. Bottom centre: distribution of per-image log-magnitude maximum values. Bottom right: distribution of per-image'
+                 f' real part extrema (max and min values).', fontsize=11, y=-0.02, ha='center')
+    
     plt.show()
 
 
 # Example usage:
 if __name__ == "__main__":
-    # Analyze all crops in your directory
-    stats, mag_vals, log_vals, real_vals = analyze_crop_statistics('cropping', sample_size=1000)
-      
-    # Print summary - this should be called separately by the user
+    # Analyse all crops in directory
+    stats, mag_vals, log_vals, real_vals = analyse_crop_statistics('cropping', sample_size=1000)
+    
+    # Print summary
     print_statistics_summary(stats)
-      
-    # Plot distributions - this should be called separately by the user  
+    
+    # Plot distributions
     plot_distribution_analysis(stats, mag_vals, log_vals, real_vals)
+
