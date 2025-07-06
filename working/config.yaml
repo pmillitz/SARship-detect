@@ -1,25 +1,28 @@
-SARFish_root_directory: /mnt/h/SARFish/
-#SARFish_root_directory: /data/pmc044/data/SARFish
+#SARFish_root_directory: /mnt/h/SARFish/
+#Generated_root_directory: /mnt/h/SARFish/Generated
+
+SARFish_root_directory: /group/pmc044/data/SARFish/
+Generated_root_directory: /group/pmc044/data/Generated/
 
 product_type: SLC
 
 create_crop:
   correspondences_path: ./xView3_SLC_GRD_correspondences.csv
   annotations_path: ./SARFish_labels/validation/SLC/SLC_validation_labels.csv
-  arrays_path: /mnt/h/SARFish/Generated/SLC/train/arrays_raw/
-  #arrays_path: /data/pmc044/data/Generated/SLC/train/arrays_raw
+  #arrays_path: /mnt/h/SARFish/Generated/SLC/train/arrays_raw/
+  arrays_path: /group/pmc044/data/Generated/SLC/train/arrays_raw
   CREATE_CROP:
-      CropPath: /mnt/h/SARFish/Generated/SLC/train/crops/
-      #CropPath: /data/pmc044/data/Generated/SLC/train/crops
+      #CropPath: /mnt/h/SARFish/Generated/SLC/train/crops/
+      CropPath: /data/pmc044/data/Generated/SLC/train/crops
       CropSize: 96
       LabelConfidence: ['HIGH', 'MEDIUM']
       QuietMode: True
 
 batch_sar_processing:
-  input_dir: '/mnt/h/SARFish/Generated/SLC/train/crops/images/'
-  #input_dir: '/data/pmc044/data/Generated/SLC/train/crops/images/'
-  output_dir: '/mnt/h/SARFish/Generated/SLC/train/crops/images_proc/'
-  #input_dir: '/data/pmc044/data/Generated/SLC/train/crops/images_proc/'
+  #input_dir: '/mnt/h/SARFish/Generated/SLC/train/crops/images/'
+  input_dir: '/group/pmc044/data/Generated/SLC/train/crops/images/'
+  #output_dir: '/mnt/h/SARFish/Generated/SLC/train/crops/images_proc/'
+  output_dir: '/group/pmc044/data/Generated/SLC/train/crops/images_proc/'
   script_path: 'complex_scale_and_norm.py'
   nan_strategy: 'skip'
   epsilon: 1e-6
@@ -29,5 +32,3 @@ batch_sar_processing:
   file_pattern: '*.npy'
   skip_existing: True
   log_file: 'batch_sar_processing.log'  # or null to disable
-
-
