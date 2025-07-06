@@ -9,6 +9,7 @@ Created: 2025-06-27
 """
 
 import random
+import subprocess
 import csv
 
 
@@ -82,4 +83,37 @@ def filter_rows(df_chunk, column, values):
     Function to filter based on a column's value 
     """
     return df_chunk[df_chunk[column].isin(values)]
+
+
+def extract_list_from_command(command, output_file=None, print_summary=False, columns=1, list_name="my_list"):
+    """
+    Runs a shell command, optionally saves output to a file, and returns the result as a list of strings.
+    
+    Parameters:
+        command (str): Shell command to execute.
+        output_file (str): Optional path to save the command output.
+        print_summary (bool): Whether to print the list summary.
+        columns (int): Number of columns to use when printing the list.
+        list_name (str): Label to use when printing the list.
+    
+    Returns:
+        List[str]: The processed list of strings.
+    """
+    # Run the shell command and capture output
+    result = subprocess.run(command, shell=True, capture_output=True, text=True, check=True)
+    lines = result.stdout.strip().split('\n')
+
+    # Optionally write to file
+    if output_file:
+        with open(output_file, 'w') as f:
+            f.write('\n'.join(lines))
+        print(f"List saved to {output_file}\n")
+
+    # Optionally print summary
+    if print_summary:
+        print(f"Total number of items in {list_name}: {len(lines)}")
+        print_list_formatted(lines, columns, list_name)
+
+    return lines
+
 
