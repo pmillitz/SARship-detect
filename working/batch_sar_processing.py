@@ -4,7 +4,7 @@
 batch_sar_processing.py
 
 Author: Peter Millitz
-Created: 2025-06-29
+Created: 2025-07-07
 
 Batch processing for SAR data. Processes all .npy files in a directory
 using the complex_scale_and_norm.py script. Processing parameters are 
@@ -64,7 +64,7 @@ def load_config(config_file: str = "config.yaml") -> dict:
     return config
 
 
-def validate_config(config: dict) -> bool:
+def validate_config(config: dict, base_dir: str) -> bool:
     """
     Validate configuration parameters.
     
@@ -72,14 +72,18 @@ def validate_config(config: dict) -> bool:
     -----------
     config : dict
         Configuration dictionary
+    base_dir : str
+        Base directory path
     
     Returns:
     --------
     bool
         True if configuration is valid
     """
-    if not os.path.exists(config['input_dir']):
-        print(f"✗ Input directory does not exist: {config['input_dir']}")
+    # Check full input directory path
+    full_input_dir = Path(base_dir) / config['input_dir']
+    if not full_input_dir.exists():
+        print(f"✗ Input directory does not exist: {full_input_dir}")
         return False
     
     if not os.path.exists(config['script_path']):
@@ -120,14 +124,16 @@ def setup_logging(config: dict):
     return None
 
 
-def find_sar_files(input_dir: str, pattern: str = "*.npy") -> List[Path]:
+def find_sar_files(base_dir: str, input_dir: str, pattern: str = "*.npy") -> List[Path]:
     """
     Find all SAR .npy files in the input directory.
     
     Parameters:
     -----------
+    base_dir : str
+        Base directory path
     input_dir : str
-        Directory to search for files
+        Input directory relative to base directory
     pattern : str
         File pattern to match
     
@@ -136,29 +142,39 @@ def find_sar_files(input_dir: str, pattern: str = "*.npy") -> List[Path]:
     List[Path]
         List of file paths found
     """
-    input_path = Path(input_dir)
-    files = list(input_path.glob(pattern))
+    full_input_path = Path(base_dir) / input_dir
+    
+    if not full_input_path.exists():
+        raise FileNotFoundError(f"Directory {full_input_path} does not exist")
+    if not full_input_path.is_dir():
+        raise NotADirectoryError(f"{full_input_path} is not a directory")
+    
+    files = list(full_input_path.glob(pattern))
     files.sort()
     
-    print(f"Found {len(files)} files matching pattern '{pattern}' in {input_dir}")
+    print(f"Found {len(files)} files matching pattern '{pattern}' in {full_input_path}")
     
     return files
 
 
-def get_output_path(input_file: Path, output_dir: str) -> Path:
+def get_output_path(input_file: Path, base_dir: str, output_dir: str) -> Path:
     """Generate output path for processed file."""
-    output_path = Path(output_dir)
+    full_output_path = Path(base_dir) / output_dir
+    full_output_path.mkdir(parents=True, exist_ok=True)  # Create directory if it doesn't exist
     output_filename = f"{input_file.stem}_proc.npy"
-    return output_path / output_filename
+    return full_output_path / output_filename
 
 
-def build_command(input_file: Path, config: dict) -> List[str]:
+def build_command(input_file: Path, config: dict, base_dir: str) -> List[str]:
     """Build command line arguments for the processing script."""
+    # Use full output directory path
+    full_output_dir = Path(base_dir) / config['output_dir']
+    
     cmd = [
         sys.executable,
         config['script_path'],
         str(input_file),
-        "--output-dir", config['output_dir'],
+        "--output-dir", str(full_output_dir),
         "--nan-strategy", config['nan_strategy'],
         "--epsilon", str(config['epsilon'])
     ]
@@ -172,17 +188,17 @@ def build_command(input_file: Path, config: dict) -> List[str]:
     return cmd
 
 
-def process_single_file(input_file: Path, config: dict, logger=None) -> Tuple[bool, str]:
+def process_single_file(input_file: Path, config: dict, base_dir: str, logger=None) -> Tuple[bool, str]:
     """Process a single SAR file."""
     try:
         # Check if output already exists
         if config['skip_existing']:
-            output_file = get_output_path(input_file, config['output_dir'])
+            output_file = get_output_path(input_file, base_dir, config['output_dir'])
             if output_file.exists():
                 return True, f"Skipped (output exists): {input_file.name}"
         
         # Build and execute command
-        cmd = build_command(input_file, config)
+        cmd = build_command(input_file, config, base_dir)
         
         # Existing screen output (unchanged)
         if config['verbose']:
@@ -233,7 +249,7 @@ def process_single_file(input_file: Path, config: dict, logger=None) -> Tuple[bo
         return False, error_msg
 
 
-def process_sequential(files: List[Path], config: dict, logger=None) -> Tuple[int, int, List[str]]:
+def process_sequential(files: List[Path], config: dict, base_dir: str, logger=None) -> Tuple[int, int, List[str]]:
     """Process files sequentially."""
     successful = 0
     failed = 0
@@ -246,7 +262,7 @@ def process_sequential(files: List[Path], config: dict, logger=None) -> Tuple[in
         if logger:
             logger.info(f"Starting file {i}/{len(files)}: {file_path.name}")
         
-        success, message = process_single_file(file_path, config, logger)
+        success, message = process_single_file(file_path, config, base_dir, logger)
         
         if success:
             successful += 1
@@ -263,13 +279,13 @@ def process_sequential(files: List[Path], config: dict, logger=None) -> Tuple[in
     return successful, failed, errors
 
 
-def process_parallel(files: List[Path], config: dict, logger=None) -> Tuple[int, int, List[str]]:
+def process_parallel(files: List[Path], config: dict, base_dir: str, logger=None) -> Tuple[int, int, List[str]]:
     """Process files in parallel using multiprocessing."""
     try:
         from concurrent.futures import ProcessPoolExecutor, as_completed
     except ImportError:
         print("Warning: multiprocessing not available, falling back to sequential processing")
-        return process_sequential(files, config, logger)
+        return process_sequential(files, config, base_dir, logger)
     
     successful = 0
     failed = 0
@@ -288,7 +304,7 @@ def process_parallel(files: List[Path], config: dict, logger=None) -> Tuple[int,
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         # Submit all jobs
         future_to_file = {
-            executor.submit(process_single_file, file_path, config, logger): file_path 
+            executor.submit(process_single_file, file_path, config, base_dir, logger): file_path 
             for file_path in files
         }
         
@@ -320,7 +336,7 @@ def process_parallel(files: List[Path], config: dict, logger=None) -> Tuple[int,
     return successful, failed, errors
 
 
-def batch_process_sar_data(config_file: str = "config.yaml"):
+def batch_process_sar_data(config_file: str = "config.yaml", base_dir: str = "."):
     """
     Main function to batch process SAR data.
     
@@ -328,6 +344,8 @@ def batch_process_sar_data(config_file: str = "config.yaml"):
     -----------
     config_file : str
         Path to YAML configuration file
+    base_dir : str
+        Base directory for input/output paths
     """
     print("=" * 60)
     print("Batch SAR Data Processing")
@@ -342,9 +360,10 @@ def batch_process_sar_data(config_file: str = "config.yaml"):
         print(f"✓ Logging enabled: {config['log_file']}")
         logger.info("Batch SAR processing started")
         logger.info(f"Configuration: {config}")
+        logger.info(f"Base directory: {base_dir}")
     
     # Validate configuration
-    if not validate_config(config):
+    if not validate_config(config, base_dir):
         return
     
     print("✓ Configuration validated")
@@ -352,13 +371,14 @@ def batch_process_sar_data(config_file: str = "config.yaml"):
         logger.info("Configuration validated successfully")
     
     # Create output directory
-    os.makedirs(config['output_dir'], exist_ok=True)
-    print(f"✓ Output directory: {config['output_dir']}")
+    full_output_dir = Path(base_dir) / config['output_dir']
+    full_output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"✓ Output directory: {full_output_dir}")
     if logger:
-        logger.info(f"Output directory created/verified: {config['output_dir']}")
+        logger.info(f"Output directory created/verified: {full_output_dir}")
     
     # Find input files
-    files = find_sar_files(config['input_dir'], config['file_pattern'])
+    files = find_sar_files(base_dir, config['input_dir'], config['file_pattern'])
     
     if not files:
         no_files_msg = "No files found to process!"
@@ -373,8 +393,9 @@ def batch_process_sar_data(config_file: str = "config.yaml"):
     
     # Display configuration
     print(f"\nProcessing Configuration:")
-    print(f"  Input directory: {config['input_dir']}")
-    print(f"  Output directory: {config['output_dir']}")
+    print(f"  Base directory: {base_dir}")
+    print(f"  Input directory: {Path(base_dir) / config['input_dir']}")
+    print(f"  Output directory: {Path(base_dir) / config['output_dir']}")
     print(f"  NaN strategy: {config['nan_strategy']}")
     print(f"  Epsilon: {config['epsilon']}")
     print(f"  Global normalisation: {'Yes' if config['global_norm_params'] else 'Adaptive'}")
@@ -392,9 +413,9 @@ def batch_process_sar_data(config_file: str = "config.yaml"):
         logger.info(f"Start time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}")
     
     if config['max_workers']:
-        successful, failed, errors = process_parallel(files, config, logger)
+        successful, failed, errors = process_parallel(files, config, base_dir, logger)
     else:
-        successful, failed, errors = process_sequential(files, config, logger)
+        successful, failed, errors = process_sequential(files, config, base_dir, logger)
     
     end_time = time.time()
     processing_time = end_time - start_time
@@ -434,17 +455,19 @@ def batch_process_sar_data(config_file: str = "config.yaml"):
 def create_sample_config(filename: str = "config.yaml"):
     """Create a sample configuration file."""
     sample_config = {
-        'input_dir': 'data/sar_crops',
-        'output_dir': 'data/processed_crops',
-        'script_path': 'complex_scale_and_norm.py',
-        'nan_strategy': 'skip',
-        'epsilon': 1e-6,
-        'verbose': True,
-        'global_norm_params': None,  # [0.001, 50.2] for global normalization
-        'max_workers': None,  # 4 for parallel processing
-        'file_pattern': '*.npy',
-        'skip_existing': True,
-        'log_file': None  # 'processing.log' to enable logging
+        'batch_sar_processing': {
+            'input_dir': 'data/sar_crops',
+            'output_dir': 'data/processed_crops',
+            'script_path': 'complex_scale_and_norm.py',
+            'nan_strategy': 'skip',
+            'epsilon': 1e-6,
+            'verbose': True,
+            'global_norm_params': None,  # [0.001, 50.2] for global normalization
+            'max_workers': None,  # 4 for parallel processing
+            'file_pattern': '*.npy',
+            'skip_existing': True,
+            'log_file': None  # 'processing.log' to enable logging
+        }
     }
     
     with open(filename, 'w') as f:
@@ -458,6 +481,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Batch process SAR data")
     parser.add_argument("--config", default="config.yaml", help="Configuration file (default: config.yaml)")
+    parser.add_argument("--base-dir", required=True, help="Base directory for input/output paths")
     parser.add_argument("--create-config", action="store_true", help="Create sample configuration file")
     
     args = parser.parse_args()
@@ -465,5 +489,4 @@ if __name__ == "__main__":
     if args.create_config:
         create_sample_config(args.config)
     else:
-        batch_process_sar_data(args.config)
-
+        batch_process_sar_data(args.config, args.base_dir)
