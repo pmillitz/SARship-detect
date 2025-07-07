@@ -4,14 +4,14 @@
 create_crop.py
 
 Author: Peter Mllitz
-Created: 2025-06-29
+Created: 2025-07-07
 
 This script extracts image crops of a given size from raw 2D SAR image arrays based on vessel
 detection annotations and outputs them as NumPy arrays (.npy) with the same shape, along with
 YOLO-style (.txt) label files. Accommodates duplicate detections in swath overlap zones and
 uses a padding strategy for edge cases where a detection centre is close to an image boundary.
 Zero padding is used as the default value for complex64 SAR data. The crop size, label
-confidence level and other parameters are specified via the cropping.yaml file. A summary CSV
+confidence level and other parameters are specified via the config.yaml file. A summary CSV
 file listing processing statisitcs for each input image, is also output.
 """
 
@@ -358,12 +358,12 @@ def find_matching_array(filename_stem, correspondence_row):
                 return swath_idx
     return None
 
-def main():
+def main(config_file="config.yaml", base_dir="."):
     """
     Main driver function to extract crops and labels for vessel detection from SAR SLC scenes.
 
     Steps:
-    1. Load paths and settings from cropping.yaml
+    1. Load paths and settings from config.yaml
     2. Create output directories for image and label crops
     3. Load correspondence and annotation files, join them on scene_id and SLC_product_identifier
     4. Scan arrays_path directory for all .npy files
@@ -373,23 +373,22 @@ def main():
        c. Process each valid annotation to create crops named by detect_id
     6. Generate a summary CSV of the number of crops created per scene
     -----------------------------------------------------------------------
-    Expected configuration keys in cropping.yaml:
+    Expected configuration keys in config.yaml:
     
     xView3_SLC_GRD_correspondences_path: str
-        Path to correspondence CSV file mapping scene IDs to SLC images
+        Relative Path to correspondence CSV file mapping scene IDs to SLC images
     annotations_path: str
-        Path to annotations CSV file mapping detection labels to SLC images
+        Relative path to annotations CSV file mapping detection labels to SLC images
     arrays_path: str
-        Path to directory containing .npy array files to process
-    CREATE_CROP:
-      CropPath: str
-          Output directory where cropped images and labels are saved
-      CropSize: int
-          Crop size (e.g., 64 for 64 x 64 crops)
-      LabelConfidence: list[str]
-          Confidence levels to include (e.g., ["HIGH", "MEDIUM"])
-      QuietMode: bool (optional)
-          If true, suppress detailed processing output (default: false)
+        Relative path to directory containing .npy array files to process
+    crop_path: str
+        Output directory where cropped images and labels are saved
+    crop_size: int
+        Crop size (e.g., 64 for 64 x 64 crops)
+    label_confidence: list[str]
+        Confidence levels to include (e.g., ["HIGH", "MEDIUM"])
+    quiet_mode: bool (optional)
+        If True, suppress detailed processing output (default: False)
     -----------------------------------------------------------------------
     """
     # Initialize logger first (in current directory)
@@ -397,7 +396,7 @@ def main():
     
     # Load configuration from YAML
     try:
-        with open("config.yaml", "r") as f:
+        with open(config_file, "r") as f:
             uni_config = yaml.safe_load(f)
             config = uni_config['create_crop']
 
@@ -411,13 +410,14 @@ def main():
         return
 
     # Resolve paths and parameters from config
+    base_path = Path(base_dir)
     correspondence_path = Path(config["correspondences_path"])
     annotation_path = Path(config["annotations_path"])
-    arrays_path = Path(config["arrays_path"])
-    crop_path = Path(config["CREATE_CROP"]["CropPath"])
-    crop_size = int(config["CREATE_CROP"]["CropSize"])
-    confidence_levels = config["CREATE_CROP"]["LabelConfidence"]
-    quiet_mode = config["CREATE_CROP"].get("QuietMode", False)  # Default to False if not specified
+    arrays_path = base_path / config["arrays_path"]
+    crop_path = base_path / config["crop_path"]
+    crop_size = int(config["crop_size"])
+    confidence_levels = config["label_confidence"]
+    quiet_mode = config.get("quiet_mode", False) # Default to False if not specified
     
     # Update logger with correct quiet_mode setting
     logger.quiet_mode = quiet_mode
@@ -609,4 +609,12 @@ def main():
     logger.close()
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Create crops from SAR data")
+    parser.add_argument("--config", default="config.yaml", help="Configuration file (default: config.yaml)")
+    parser.add_argument("--base-dir", required=True, help="Base directory for input/output paths")
+    
+    args = parser.parse_args()
+    main(args.config, args.base_dir)
+
