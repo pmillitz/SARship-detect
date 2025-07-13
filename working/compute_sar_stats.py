@@ -2,35 +2,89 @@
 """
 compute_sar_stats.py
 
-Author: Peter Millitz
-Created: 2025-06-28
+Author:
+Created: 2025-07-12
 
-usage: compute_sar_stats.py [-h]
-                            [--pattern {slc-vh, slc-vv, grd-vh, grd-vv}]
-                            [--save-array] [--correspondence-file PATH] 
-                            [--include-scene-ids PATH]
-                            [-q(uiet)] 
-                            root_path 
+usage: compute_sar_stats.py [-h] [-j JOBS] [-q(uiet)] input_path
 
-Recursively searches for all GeoTIFF files under a given root directory whose filename
-contains any one pattern in ["slc-vh", "slc-vv", "grd-vh", "grd-vv"] and ends with ".tiff".
-For each matching file, the SLC or GRD data is unpacked into a NumPy array and a range of
-statistics computed. Optionally, the extracted array can be saved for later use. Each tiff
-file's statistics are inserted as a new row into a dataframe which is saved to a CSV file
-named "{pattern}_stats.csv", on exit. The correspondence file is used for mapping scene ids
-with image tiffs. An optional inclusion list can be used to process only specific scene_ids.
+Reads NumPy arrays from the specified input directory and computes statistics
+for SAR data. The input directory should contain .npy files created by
+unload_sar_data.py along with a manifest.json file. Statistics are saved
+to a CSV file in the current working directory.
 """
 
 import argparse
 import time
+import json
+import socket
+import os
 from pathlib import Path
 import gc
-import os
-import signal
-import random
+import multiprocessing as mp
+from functools import partial
 import pandas as pd
 import numpy as np
-from GeoTiff import load_GeoTiff
+import psutil
+
+def detect_environment():
+    """
+    Detect if running in Jupyter notebook environment.
+    """
+    try:
+        # Check if we're in a Jupyter environment
+        shell = get_ipython().__class__.__name__
+        if shell == 'ZMQInteractiveShell':
+            return 'jupyter'
+    except NameError:
+        pass
+    return 'script'
+
+def get_optimal_workers(user_specified: int = None) -> tuple[int, str, str]:
+    """
+    Determine optimal number of workers based on system and environment.
+    Returns: (workers, system, environment)
+    """
+    # Detect environment first
+    environment = detect_environment()
+    
+    # Determine the current host
+    hostname = socket.gethostname()
+    if "kaya" in hostname.lower() or os.getenv("HPC_ENV") == "true":
+        system = "kaya"
+    else:
+        system = "local"
+    
+    # Get available CPU cores
+    cpu_count = mp.cpu_count()
+    
+    # Environment-specific handling
+    if environment == 'jupyter':
+        # Jupyter notebooks have multiprocessing issues - use conservative approach
+        if user_specified is not None and user_specified > 1:
+            print("Warning: Multiprocessing in Jupyter can be unstable. Consider using -j 1 for sequential processing.")
+            default_workers = min(user_specified, 4)  # Cap at 4 workers max in Jupyter
+        else:
+            default_workers = 1  # Default to sequential in Jupyter
+    else:
+        # Script environment - full multiprocessing support
+        if system == "kaya":
+            # HPC environment - can use more aggressive parallelization
+            slurm_cpus = os.getenv('SLURM_CPUS_PER_TASK')
+            if slurm_cpus:
+                default_workers = int(slurm_cpus)
+            else:
+                default_workers = max(1, cpu_count - 1)  # Leave one core free
+        else:
+            # Local system - more conservative
+            default_workers = max(1, min(cpu_count // 2, 8))  # Use half cores, max 8
+    
+    # Use user specification if provided, otherwise use system default
+    if user_specified is not None:
+        workers = min(user_specified, cpu_count)
+    else:
+        workers = default_workers
+    
+    return workers, system, environment
 
 # Compute statistics for SLC product
 def slc_stats(array):
@@ -156,72 +210,108 @@ def grd_stats(array):
     
     return stats_dict
 
-def find_matching_files(root_path: Path, mode: str, included_safe_dirs: set = None) -> list[Path]:
-    """
-    Walk through `root_path` recursively and return a list of all file Paths
-    whose names contain `mode` (e.g. "slc-vh") and end with ".tiff".
-    Only include files whose safe_directory is in the inclusion set.
-    """
-    pattern = f"*{mode}*.tiff"
-    
-    if included_safe_dirs is None:
-        return list(root_path.rglob(pattern))
-    
-    # Only process files whose safe_directory is in the inclusion set
-    filtered_files = []
-    for tiff_path in root_path.rglob(pattern):
-        safe_dir = tiff_path.parent.parent.name.replace('.SAFE', '')
-        if safe_dir in included_safe_dirs:
-            filtered_files.append(tiff_path)
-    
-    return filtered_files
-
-def create_error_row(tiff_path: Path) -> dict:
+def create_error_row(file_info: dict) -> dict:
     """Create a minimal row for files that couldn't be processed."""
-    parent_dir = tiff_path.parent.parent.name
-    filename_with_ext = tiff_path.name
-    return {"safe_directory": parent_dir, "filename": filename_with_ext}
+    return {
+        "safe_directory": file_info.get('safe_directory', ''),
+        "filename": file_info.get('filename', '')
+    }
 
-def process_one_file(tiff_path: Path, mode: str, save_array_path: Path) -> dict:
+def process_one_array(array_path: Path, file_info: dict, mode: str) -> dict:
     """
-    Process a single TIFF file with optimised statistics computation and robust error handling.
+    Process a single NumPy array file with optimised statistics computation.
     """
-    # Set up signal handler for graceful termination
-    def timeout_handler(signum, frame):
-        raise TimeoutError(f"Processing timeout for {tiff_path.name}")
-    
-    # Set a timeout to prevent hanging processes
-    signal.signal(signal.SIGALRM, timeout_handler)
-    signal.alarm(300)  # 5 minute timeout per file
-    
     try:
-        # Load the GeoTIFF file
+        # Load the NumPy array
         try:
-            loaded = load_GeoTiff(str(tiff_path))
+            data = np.load(str(array_path), allow_pickle=False)
+            print(f"Loaded {array_path.name}: shape={data.shape}, size={data.size}, dtype={data.dtype}")
         except Exception as load_error:
-            print(f"*** Error loading {tiff_path.name}: {load_error}")
-            return create_error_row(tiff_path)
-        
-        if not loaded or loaded[0] is None:
-            print(f"*** Warning: load_GeoTiff returned None for {tiff_path.name}. Skipping stats.")
-            return create_error_row(tiff_path)
-
-        data = loaded[0]
+            print(f"*** Error loading {array_path.name}: {load_error}")
+            return create_error_row(file_info)
         
         # Validate the data array
         if data is None or data.size == 0:
-            print(f"*** Warning: Empty or invalid data array for {tiff_path.name}")
-            return create_error_row(tiff_path)
+            print(f"*** Warning: Empty or invalid data array for {array_path.name}")
+            return create_error_row(file_info)
 
-        if save_array_path:
-            # Create output directory if it doesn't exist
-            save_array_path.mkdir(parents=True, exist_ok=True)
-            out_npy = save_array_path / f"{tiff_path.stem}.npy"
+        # Check array shape and fix if needed
+        if data.ndim == 1:
+            # Try to determine original shape from file size and data type
+            print(f"*** Warning: 1D array detected for {array_path.name} with {data.size} elements")
+            
+            total_elements = data.size
+            
+            # Calculate possible square dimensions
+            sqrt_elements = int(np.sqrt(total_elements))
+            
+            # Try common SAR image dimensions
+            possible_shapes = []
+            
+            # Perfect square
+            if sqrt_elements * sqrt_elements == total_elements:
+                possible_shapes.append((sqrt_elements, sqrt_elements))
+            
+            # Try factorization for rectangular shapes
+            # Look for factors close to square root
+            for width in range(max(1000, sqrt_elements - 1000), sqrt_elements + 1000):
+                if total_elements % width == 0:
+                    height = total_elements // width
+                    if abs(width - height) < max(width, height) * 0.5:  # Aspect ratio not too extreme
+                        possible_shapes.append((height, width))
+            
+            # Add some common SAR dimensions if they fit
+            common_widths = [25000, 20000, 15000, 10000, 5000]
+            for width in common_widths:
+                if total_elements % width == 0:
+                    height = total_elements // width
+                    possible_shapes.append((height, width))
+            
+            print(f"Possible shapes for {total_elements} elements: {possible_shapes[:5]}")  # Show first 5
+            
+            if possible_shapes:
+                new_shape = possible_shapes[0]  # Use the first valid shape
+                try:
+                    data = data.reshape(new_shape)
+                    print(f"Successfully reshaped {array_path.name} to {new_shape}")
+                except Exception as reshape_error:
+                    print(f"*** Error reshaping {array_path.name}: {reshape_error}")
+                    return create_error_row(file_info)
+            else:
+                print(f"*** Error: Cannot determine valid shape for {array_path.name} with {total_elements} elements")
+                return create_error_row(file_info)
+        
+        elif data.ndim > 2:
+            # Handle multi-dimensional arrays by flattening to 2D
+            print(f"*** Warning: {data.ndim}D array detected for {array_path.name} with shape {data.shape}")
+            original_shape = data.shape
             try:
-                np.save(str(out_npy), data)
-                print(f"Array saved as: {out_npy}")
-            except Exception as e:
-                print(f"*** Warning: failed to save array for {tiff_path.name}: {e}")
+                # Reshape to 2D by combining all but the last dimension
+                if data.ndim == 3:
+                    data = data.reshape(original_shape[0] * original_shape[1], original_shape[2])
+                else:
+                    data = data.reshape(original_shape[0], -1)
+                print(f"Reshaped from {original_shape} to {data.shape}")
+            except Exception as reshape_error:
+                print(f"*** Error reshaping multi-dimensional array {array_path.name}: {reshape_error}")
+                return create_error_row(file_info)
+        else:
+            # Already 2D - show dimensions for confirmation
+            print(f"2D array: {data.shape}")
+
+        # Ensure we have a 2D array
+        if data.ndim != 2:
+            print(f"*** Error: Final array for {array_path.name} is not 2D (shape: {data.shape})")
+            return create_error_row(file_info)
+
+        # Additional validation for data type
+        if "slc" in mode.lower() and not np.iscomplexobj(data):
+            print(f"*** Warning: SLC data expected to be complex, but got {data.dtype} for {array_path.name}")
+        elif "grd" in mode.lower() and np.iscomplexobj(data):
+            print(f"*** Warning: GRD data expected to be real, but got complex data for {array_path.name}")
+            # Convert complex to real by taking magnitude
+            data = np.abs(data)
+            print(f"Converted complex GRD data to magnitude for {array_path.name}")
 
         # Compute statistics using relevant function
         if "grd" in mode:
@@ -232,67 +322,231 @@ def process_one_file(tiff_path: Path, mode: str, save_array_path: Path) -> dict:
             stats_name = "slc_stats" 
 
         # Clean up memory
-        del data, loaded
+        del data
         gc.collect()
 
         if stats_dict is None:
-            print(f"*** Warning: {stats_name} returned None for {tiff_path.name}.")
-            return create_error_row(tiff_path)
+            print(f"*** Warning: {stats_name} returned None for {array_path.name}.")
+            return create_error_row(file_info)
 
-        # Extract safe directory name and filename separately
-        parent_dir = tiff_path.parent.parent.name  # Get the .SAFE directory name
-        filename_with_ext = tiff_path.name  # Get filename with extension
-        
-        # Insert the safe directory and filename into the stats dict
-        row = {"safe_directory": parent_dir, "filename": filename_with_ext}
+        # Create row with metadata from file_info
+        row = {
+            "safe_directory": file_info.get('safe_directory', ''),
+            "filename": file_info.get('filename', '')
+        }
         row.update(stats_dict)
         return row
         
-    except (TimeoutError, MemoryError, Exception) as e:
+    except Exception as e:
         error_type = type(e).__name__
-        print(f"*** {error_type} processing {tiff_path.name}: {e}")
-        return create_error_row(tiff_path)
+        print(f"*** {error_type} processing {array_path.name}: {e}")
+        return create_error_row(file_info)
     finally:
-        # Clean up and disable alarm
-        signal.alarm(0)
-        # Force cleanup of any remaining variables
-        for var_name in ['data', 'loaded']:
-            if var_name in locals() and locals()[var_name] is not None:
-                try:
-                    del locals()[var_name]
-                except:
-                    pass
+        # Force cleanup
+        if 'data' in locals() and locals()['data'] is not None:
+            try:
+                del data
+            except:
+                pass
         gc.collect()
 
-def process_files(tiff_files: list[Path], mode: str, save_array_path: Path, 
-                  quiet: bool = False) -> list[dict]:
+def process_one_array_wrapper(args):
     """
-    Process files sequentially.
+    Wrapper function for multiprocessing. Unpacks arguments and calls process_one_array.
     """
-    rows = []
-    total_files = len(tiff_files)
+    file_info, mode, quiet = args
+    array_path = Path(file_info['array_path'])
     
-    for idx, tiff_path in enumerate(tiff_files, start=1):
+    # Double-check file exists (should have been filtered already)
+    if not array_path.exists():
         if not quiet:
-            print(f"Processing file {idx}/{total_files}: {tiff_path.name}")
-            start_time = time.time()
-        
-        row = process_one_file(tiff_path, mode, save_array_path)
-        rows.append(row)
+            print(f"*** Warning: Array file not found during processing: {array_path}")
+        return create_error_row(file_info)
+    
+    return process_one_array(array_path, file_info, mode)
 
-        if not quiet:
-            elapsed = time.time() - start_time
-            print(f"Finished {tiff_path.name} in {elapsed:.2f} seconds.\n")
+def process_arrays(manifest_data: dict, input_path: Path, quiet: bool = False, n_workers: int = None) -> list[dict]:
+    """
+    Process all arrays listed in the manifest using parallel processing with timeout protection.
+    """
+    files_info = manifest_data.get('files', [])
+    mode = manifest_data.get('pattern', 'slc-vh')
+    
+    # Filter for successfully unloaded files AND check if they actually exist
+    successful_files = []
+    missing_files = 0
+    
+    for f in files_info:
+        if f['status'] == 'success':
+            array_path = Path(f['array_path'])
+            if array_path.exists():
+                successful_files.append(f)
+            else:
+                missing_files += 1
+                if not quiet:
+                    print(f"*** Warning: Array file not found: {array_path}")
+    
+    total_files = len(successful_files)
+    
+    if total_files == 0:
+        print("No valid array files found in manifest")
+        if missing_files > 0:
+            print(f"Note: {missing_files} files listed in manifest but not found on disk")
+        return []
+    
+    if missing_files > 0:
+        print(f"Found {total_files} valid arrays ({missing_files} missing from manifest)")
+    
+    # Determine optimal number of workers using host detection
+    optimal_workers, system, environment = get_optimal_workers(n_workers)
+    
+    # For large files (>1GB), be more conservative with workers
+    sample_file = Path(successful_files[0]['array_path'])
+    if sample_file.exists():
+        file_size_gb = sample_file.stat().st_size / (1024**3)
+        if file_size_gb > 1.0:
+            # Reduce workers for large files to prevent memory issues
+            memory_limited_workers = max(1, min(optimal_workers, 4))
+            if memory_limited_workers < optimal_workers:
+                print(f"Large files detected ({file_size_gb:.1f}GB), reducing workers from {optimal_workers} to {memory_limited_workers}")
+                optimal_workers = memory_limited_workers
+    
+    if not quiet:
+        print(f"Detected system: {system}")
+        print(f"Environment: {environment}")
+        if environment == 'jupyter' and optimal_workers > 1:
+            print("Note: Running in Jupyter - multiprocessing may be less stable")
+        if n_workers is not None:
+            print(f"Using user-specified {optimal_workers} workers")
+        else:
+            print(f"Using auto-detected {optimal_workers} workers")
+        print(f"Processing {total_files} arrays")
+    
+    # Prepare arguments for parallel processing - only for existing files
+    args_list = [(file_info, mode, quiet) for file_info in successful_files]
+    
+    if optimal_workers == 1:
+        # Sequential processing
+        rows = []
+        for idx, args in enumerate(args_list, start=1):
+            if not quiet:
+                print(f"Processing array {idx}/{total_files}: {Path(args[0]['array_path']).name}")
+                start_time = time.time()
+            
+            row = process_one_array_wrapper(args)
+            rows.append(row)
+            
+            if not quiet:
+                elapsed = time.time() - start_time
+                print(f"Finished {Path(args[0]['array_path']).name} in {elapsed:.2f} seconds.\n")
+    else:
+        # Parallel processing with timeout and progress monitoring
+        import signal
+        import threading
+        import time as time_module
+        
+        def timeout_handler(signum, frame):
+            raise TimeoutError("Processing timeout - workers may be stuck")
+        
+        rows = []
+        try:
+            with mp.Pool(processes=optimal_workers) as pool:
+                if not quiet:
+                    print("Starting parallel processing...")
+                
+                # Set up shorter timeout for testing (5 minutes instead of 30)
+                signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(300)  # 5 minute timeout for debugging
+                
+                # Use map_async for better control and immediate feedback
+                progress_interval = max(1, total_files // 20)  # Update every 5%
+                completed = 0
+                start_time = time_module.time()
+                
+                try:
+                    # Submit all jobs and track them
+                    print(f"Submitting {len(args_list)} jobs to {optimal_workers} workers...")
+                    result = pool.map_async(process_one_array_wrapper, args_list, chunksize=1)
+                    
+                    # Poll for completion with timeout
+                    while not result.ready():
+                        time_module.sleep(10)  # Check every 10 seconds
+                        elapsed = time_module.time() - start_time
+                        print(f"Still processing... {elapsed:.0f}s elapsed (timeout in {300-elapsed:.0f}s)")
+                        
+                        # Check memory usage
+                        memory_percent = psutil.virtual_memory().percent
+                        if memory_percent > 85:
+                            print(f"Warning: High memory usage ({memory_percent:.1f}%)")
+                    
+                    # Get results
+                    print("Workers completed, collecting results...")
+                    rows = result.get(timeout=60)  # 1 minute to collect results
+                    print(f"Successfully collected {len(rows)} results")
+                
+                except mp.TimeoutError:
+                    print("*** Timeout waiting for worker results")
+                    print("This suggests workers are stuck - falling back to sequential processing")
+                    # Don't return empty results, fall through to sequential fallback
+                    rows = []
+                
+                except Exception as e:
+                    print(f"Error during parallel processing: {e}")
+                    print("Attempting to continue with completed results...")
+                    rows = []
+                
+                finally:
+                    signal.alarm(0)  # Cancel timeout
+                    
+        except TimeoutError:
+            print("Processing timed out after 5 minutes")
+            print(f"Workers appear to be stuck - this often happens with large arrays in multiprocessing")
+            print("Falling back to sequential processing...")
+            rows = []
+        except Exception as e:
+            print(f"Parallel processing failed: {e}")
+            print("Falling back to sequential processing...")
+            rows = []
+        
+        # If parallel processing failed or returned no results, fall back to sequential
+        if not rows:
+            print("\n=== FALLING BACK TO SEQUENTIAL PROCESSING ===")
+            print("This is more reliable for large arrays but will be slower...")
+            
+            for idx, args in enumerate(args_list, start=1):
+                if not quiet:
+                    print(f"\nProcessing array {idx}/{total_files}: {Path(args[0]['array_path']).name}")
+                    start_time = time_module.time()
+                
+                row = process_one_array_wrapper(args)
+                rows.append(row)
+                
+                if not quiet:
+                    elapsed = time_module.time() - start_time
+                    print(f"Completed in {elapsed:.2f} seconds")
+                    
+                    # Show progress
+                    progress = idx / total_files * 100
+                    print(f"Progress: {idx}/{total_files} ({progress:.1f}%)")
     
     return rows
 
-def add_scene_id(df: pd.DataFrame, corr_df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+def add_scene_id(df: pd.DataFrame, correspondence_file: Path) -> tuple[pd.DataFrame, int]:
     """
     Add scene_id column to dataframe using correspondence file.
     Returns the updated dataframe and count of missing mappings.
     """
-    # Create mapping dictionary based on mode
-    # Determine if we're processing SLC or GRD files
+    if not correspondence_file.exists():
+        print(f"Warning: Correspondence file '{correspondence_file}' not found")
+        return df, len(df)
+    
+    try:
+        corr_df = pd.read_csv(correspondence_file)
+    except Exception as e:
+        print(f"Warning: Error reading correspondence file: {e}")
+        return df, len(df)
+    
+    # Create mapping dictionary based on available columns
     if 'SLC_product_identifier' in corr_df.columns and 'GRD_product_identifier' in corr_df.columns:
         # Create combined mapping - try SLC first, then GRD
         slc_mapping = corr_df.set_index('SLC_product_identifier')['scene_id'].to_dict()
@@ -306,7 +560,7 @@ def add_scene_id(df: pd.DataFrame, corr_df: pd.DataFrame) -> tuple[pd.DataFrame,
         mapping_dict = corr_df.set_index('GRD_product_identifier')['scene_id'].to_dict()
     else:
         print("Warning: No SLC or GRD product identifier columns found in correspondence file")
-        mapping_dict = {}
+        return df, len(df)
     
     # Remove .SAFE suffix and map to scene_id
     safe_dirs_clean = df['safe_directory'].str.replace('.SAFE', '', regex=False)
@@ -325,117 +579,62 @@ def add_scene_id(df: pd.DataFrame, corr_df: pd.DataFrame) -> tuple[pd.DataFrame,
 def main():
     parser = argparse.ArgumentParser(
         description=(
-            "Search recursively under a root directory for all GeoTIFF files (.tiff suffix) "
-            "and whose names contain one of the specified substrings (e.g. 'slc-vh'). "
-            "For each such file, load the data, compute statistics, then save the results to "
-            "a CSV file."
+            "Process NumPy arrays created by unload_sar_data.py and compute statistics. "
+            "The input directory should contain .npy files and a manifest.json file."
         )
     )
     parser.add_argument(
-        "root_path",
+        "input_path",
         type=Path,
-        help="Path to the root directory under which to search for matching .tiff files"
+        help="Path to the directory containing .npy files and manifest.json"
     )
     parser.add_argument(
-        "--pattern",
-        type=str,
-        choices=["slc-vh", "slc-vv", "grd-vh", "grd-vv"],
-        default="slc-vh",
-        help="Substring to match in filenames (e.g. 'slc-vh')"
-    )
-    parser.add_argument(
-        "--save-array",
-        type=Path,
-        help="Path to directory where .npy files will be saved. If not provided, arrays are not saved."
-    )
-    parser.add_argument(
-        "--correspondence-file",
-        type=Path,
-        default="xView3_SLC_GRD_correspondences.csv",
-        help="Path to the correspondence CSV file for scene_id mapping (default: correspondences.csv)"
+        "-j", "--jobs",
+        type=int,
+        default=None,
+        help="Number of parallel workers (default: auto-detect based on CPU cores)"
     )
     parser.add_argument(
         "-q", "--quiet",
         action="store_true",
         help="Suppress per-file progress messages; only warnings and final summary are shown"
     )
-    parser.add_argument(
-        "--include-scene-ids",
-        type=Path,
-        help="Path to a text file containing scene_ids to include (one per line). If not provided, all files are processed."
-    )
    
     args = parser.parse_args()
-    root_path = args.root_path
-    mode = args.pattern
-    save_array_path = args.save_array
-    correspondence_file = args.correspondence_file
+    input_path = args.input_path
+    n_workers = args.jobs
     quiet = args.quiet
 
-    if not root_path.is_dir():
-        parser.error(f"Provided root_path ({root_path}) is not a directory or does not exist.")
+    if not input_path.is_dir():
+        parser.error(f"Provided input_path ({input_path}) is not a directory or does not exist.")
 
-    # Load inclusion list if provided
-    included_scene_ids = None
-    if args.include_scene_ids:
-        if args.include_scene_ids.exists():
-            try:
-                with open(args.include_scene_ids, 'r') as f:
-                    included_scene_ids = {line.strip() for line in f if line.strip()}
-                if not quiet:
-                    print(f"Loaded {len(included_scene_ids)} scene IDs to include")
-            except Exception as e:
-                print(f"Warning: Error reading inclusion file: {e}")
-                included_scene_ids = None
-        else:
-            print(f"Warning: Inclusion file '{args.include_scene_ids}' not found")
+    # Load manifest file
+    manifest_path = input_path / "manifest.json"
+    if not manifest_path.exists():
+        parser.error(f"Manifest file not found: {manifest_path}")
 
-    # Convert included scene_ids to safe_directory names for filtering
-    included_safe_dirs = None
-    if included_scene_ids and correspondence_file.exists():
-        try:
-            corr_df = pd.read_csv(correspondence_file)
-            included_safe_dirs = set()
-            
-            # Map scene_ids to safe_directory names
-            for _, row in corr_df.iterrows():
-                scene_id = row['scene_id']
-                if scene_id in included_scene_ids:
-                    if 'SLC_product_identifier' in corr_df.columns and pd.notna(row['SLC_product_identifier']):
-                        safe_name = row['SLC_product_identifier'].replace('.SAFE', '')
-                        included_safe_dirs.add(safe_name)
-                    if 'GRD_product_identifier' in corr_df.columns and pd.notna(row['GRD_product_identifier']):
-                        safe_name = row['GRD_product_identifier'].replace('.SAFE', '')
-                        included_safe_dirs.add(safe_name)
-                        
-            if not quiet:
-                print(f"Mapped to {len(included_safe_dirs)} safe directories to include")
-        except Exception as e:
-            print(f"Warning: Error loading correspondence file for filtering: {e}")
-            included_safe_dirs = None
+    try:
+        with open(manifest_path, 'r') as f:
+            manifest_data = json.load(f)
+    except Exception as e:
+        parser.error(f"Error reading manifest file: {e}")
 
-    print("Processing...")
+    mode = manifest_data.get('pattern', 'slc-vh')
+    correspondence_file = Path(manifest_data.get('correspondence_file', 'xView3_SLC_GRD_correspondences.csv'))
 
-    # Find all matching files
+    print("Processing arrays...")
     if not quiet:
-        filter_msg = f" (filtered by inclusion list)" if included_safe_dirs else ""
-        print(f"Searching for files matching '*{mode}*.tiff' under {root_path}{filter_msg}")
-    
-    tiff_files = find_matching_files(root_path, mode, included_safe_dirs)
+        print(f"Processing {mode} arrays from: {input_path}")
+        print(f"Manifest contains {len(manifest_data.get('files', []))} file entries")
 
-    if not tiff_files:
-        filter_msg = " matching inclusion criteria" if included_safe_dirs else ""
-        print(f"No files{filter_msg} matching '*{mode}*.tiff' found under {root_path}")
-        return
-
-    total_files = len(tiff_files)
-    if not quiet:
-        print(f"Found {total_files} matching files")
-
-    # Process files
+    # Process arrays
     start_time = time.time()
-    rows = process_files(tiff_files, mode, save_array_path, quiet)
+    rows = process_arrays(manifest_data, input_path, quiet, n_workers)
     processing_time = time.time() - start_time
+
+    if not rows:
+        print("No arrays processed successfully")
+        return
 
     # Build pandas DataFrame with predefined columns
     columns = [
@@ -469,32 +668,27 @@ def main():
 
     df = pd.DataFrame(rows, columns=columns)
     
-    # Load correspondence table and add scene_id (reuse existing dataframe if already loaded)
-    try:
-        if correspondence_file.exists():
-            if 'corr_df' not in locals():
-                corr_df = pd.read_csv(correspondence_file)
-            df_with_scene, missing_count = add_scene_id(df, corr_df)
-        else:
-            print(f"Warning: Correspondence file '{correspondence_file}' not found. Proceeding without scene_id mapping.")
-            df_with_scene = df
-            missing_count = len(df)
-    except Exception as e:
-        print(f"Warning: Error processing correspondence file '{correspondence_file}': {e}. Proceeding without scene_id mapping.")
-        df_with_scene = df  
-        missing_count = len(df)
+    # Add scene_id mapping
+    df_with_scene, missing_count = add_scene_id(df, correspondence_file)
 
     # Save the DataFrame as a CSV file
     output_csv = Path.cwd() / f"{mode}_stats.csv"
     df_with_scene.to_csv(output_csv, index=False)
 
-    print(f"Stats for {len(df)} file(s) written to: {output_csv}")
-    if 'missing_count' in locals() and missing_count > 0:
+    print(f"Stats for {len(df)} array(s) written to: {output_csv}")
+    if missing_count > 0:
         print(f"Note: {missing_count} files could not be mapped to scene_id")
     print(f"Total processing time: {processing_time:.2f} seconds")
-    if total_files > 0:
-        print(f"Average time per file: {processing_time/total_files:.2f} seconds")
+    if len(rows) > 0:
+        print(f"Average time per array: {processing_time/len(rows):.2f} seconds")
+    
+    # Show worker info in final summary
+    optimal_workers, system, environment = get_optimal_workers(n_workers)
+    if optimal_workers > 1:
+        print(f"Used {optimal_workers} parallel workers on {system} system ({environment} environment)")
 
 
 if __name__ == "__main__":
+    # Required for multiprocessing on Windows
+    mp.set_start_method('spawn', force=True)
     main()
