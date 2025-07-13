@@ -4,7 +4,7 @@
 compare_crops.py
 
 Author: Peter Millitz
-Created: 2025-07-04
+Created: 2025-07-12
 
 """
     
@@ -19,7 +19,7 @@ def crop_compare(image_list1, image_list2=None, base_dir='.',
                 amp_min=1.0, amp_max=69.4, log_min=9.0, log_max=30.4, real_min=-20, real_max=20,
                 mode_row1='magnitude', mode_row2='magnitude'):
     """
-    Compare SAR image crops showing magnitude, log-magnitude, and real parts with normalisation.
+    Compare SAR image crops showing magnitude, log-magnitude, and real parts with normalization.
     
     Parameters:
     -----------
@@ -30,11 +30,11 @@ def crop_compare(image_list1, image_list2=None, base_dir='.',
     base_dir : str
         Base directory path containing 'images' and 'labels' subdirectories
     amp_min, amp_max : float
-        Min/max values for magnitude normalisation (default: 1.0, 69.4)
+        Min/max values for magnitude normalization (default: 1.0, 69.4)
     log_min, log_max : float
-        Min/max values for log-magnitude (dB) normalisation (default: 9.0, 30.4)
+        Min/max values for log-magnitude (dB) normalization (default: 9.0, 30.4)
     real_min, real_max : float
-        Min/max values for real part normalisation (default: -20, 20)
+        Min/max values for real part normalization (default: -20, 20)
     mode_row1, mode_row2 : str
         Display mode for each row: 'magnitude', 'log-magnitude', or 'real'
     """
@@ -76,7 +76,7 @@ def crop_compare(image_list1, image_list2=None, base_dir='.',
                             center_x, center_y, width, height = map(float, parts)
                             class_id = 0  # Default class if not provided
                         
-                        # Convert from normalised coordinates to pixel coordinates
+                        # Convert from normalized coordinates to pixel coordinates
                         pixel_center_x = center_x * img_width
                         pixel_center_y = center_y * img_height
                         pixel_width = width * img_width
@@ -92,25 +92,25 @@ def crop_compare(image_list1, image_list2=None, base_dir='.',
             print(f"Error loading bounding box from {label_path}: {e}")
             return None
 
-    def normalise_image(img_data, min_val, max_val):
-        """Normalise image to [0, 1] range using dataset min/max values"""
-        normalised = (img_data - min_val) / (max_val - min_val)
-        return np.clip(normalised, 0, 1)
+    def normalize_image(img_data, min_val, max_val):
+        """Normalize image to [0, 1] range using dataset min/max values"""
+        normalized = (img_data - min_val) / (max_val - min_val)
+        return np.clip(normalized, 0, 1)
 
     def process_image(image_path, mode):
         """Process image according to specified mode"""
         if mode == 'magnitude':
             img_data = load_sar_image_magnitude(image_path)
-            img_normalised = normalise_image(img_data, amp_min, amp_max)
-            return img_data, img_normalised
+            img_normalized = normalize_image(img_data, amp_min, amp_max)
+            return img_data, img_normalized
         elif mode == 'log-magnitude':
             img_data = load_sar_image_log_magnitude(image_path)
-            img_normalised = normalise_image(img_data, log_min, log_max)
-            return img_data, img_normalised
+            img_normalized = normalize_image(img_data, log_min, log_max)
+            return img_data, img_normalized
         elif mode == 'real':
             img_data = load_sar_image_real(image_path)
-            img_normalised = normalise_image(img_data, real_min, real_max)
-            return img_data, img_normalised
+            img_normalized = normalize_image(img_data, real_min, real_max)
+            return img_data, img_normalized
         else:
             raise ValueError(f"Unknown mode: {mode}. Use 'magnitude', 'log-magnitude', or 'real'")
 
@@ -120,6 +120,28 @@ def crop_compare(image_list1, image_list2=None, base_dir='.',
         label_paths = [f"{base_dir}/labels/{filename.replace('.npy', '.txt')}" for filename in image_list]
         return image_paths, label_paths
 
+    # Validate input lists
+    if len(image_list1) < 1:
+        print("Error: image_list1 must contain at least 1 image.")
+        return
+    if len(image_list1) > 5:
+        print("Error: image_list1 cannot contain more than 5 images.")
+        return
+    
+    if image_list2 is not None:
+        if len(image_list2) < 1:
+            print("Error: image_list2 must contain at least 1 image.")
+            return
+        if len(image_list2) > 5:
+            print("Error: image_list2 cannot contain more than 5 images.")
+            return
+        if len(image_list1) != len(image_list2):
+            print("Error: image_list1 and image_list2 must have the same number of images.")
+            return
+    
+    # Determine number of images to display
+    num_images = len(image_list1)
+    
     # Determine display mode
     single_list_mode = image_list2 is None
     
@@ -131,15 +153,15 @@ def crop_compare(image_list1, image_list2=None, base_dir='.',
         image_paths2, label_paths2 = image_paths1, label_paths1
 
     # Create figure with proper spacing for vertical colorbars
-    fig = plt.figure(figsize=(24, 10))
+    fig = plt.figure(figsize=(4*num_images + 2, 10))
     
     # Use GridSpec for better control over layout
     from matplotlib.gridspec import GridSpec
-    gs = GridSpec(2, 6, figure=fig, 
-                  width_ratios=[1, 1, 1, 1, 1, 0.1],  # Last column narrower for colorbar
+    gs = GridSpec(2, num_images + 1, figure=fig, 
+                  width_ratios=[1]*num_images + [0.1],  # Last column narrower for colorbar
                   hspace=0.3, wspace=0.1)
 
-    # Create normalisation objects for colorbars
+    # Create normalization objects for colorbars
     def get_norm_and_label(mode):
         if mode == 'magnitude':
             return Normalize(vmin=amp_min, vmax=amp_max), 'Magnitude'
@@ -154,15 +176,15 @@ def crop_compare(image_list1, image_list2=None, base_dir='.',
     norm2, label2 = get_norm_and_label(mode_row2)
     
     # First row
-    for i in range(5):
+    for i in range(num_images):
         ax = fig.add_subplot(gs[0, i])  # Use GridSpec positioning
         
         # Process image according to mode
-        img_data, img_normalised = process_image(image_paths1[i], mode_row1)
+        img_data, img_normalized = process_image(image_paths1[i], mode_row1)
         img_height, img_width = img_data.shape
         
-        # Display normalised image
-        ax.imshow(img_normalised, cmap='gray', vmin=0, vmax=1, aspect='equal')
+        # Display normalized image
+        ax.imshow(img_normalized, cmap='gray', vmin=0, vmax=1, aspect='equal')
         
         # Load and display bounding box
         bbox = load_bounding_box(label_paths1[i], img_height, img_width)
@@ -179,7 +201,7 @@ def crop_compare(image_list1, image_list2=None, base_dir='.',
             ax.text(
                 label_x, label_y, label_str,
                 color='lime',
-                fontsize=10,  # Slightly smaller for crop_compare grid layout
+                fontsize=8,  # Slightly smaller for crop_compare grid layout
                 verticalalignment='top',     # Top of label aligns with (x, y)
                 horizontalalignment='right'  # Right end of label aligns with (x, y)
             )
@@ -200,19 +222,19 @@ def crop_compare(image_list1, image_list2=None, base_dir='.',
             spine.set_linewidth(1)
 
     # Add vertical colorbar for first row (aligned with images)
-    cbar_ax1 = fig.add_subplot(gs[0, 5])  # Use GridSpec for colorbar too
+    cbar_ax1 = fig.add_subplot(gs[0, num_images])  # Use GridSpec for colorbar too
     cbar1 = ColorbarBase(cbar_ax1, cmap=cm.gray, norm=norm1, orientation='vertical')
     cbar1.set_label(label1, fontsize=10)
 
     # Second row
-    for i in range(5):
+    for i in range(num_images):
         ax = fig.add_subplot(gs[1, i])  # Use GridSpec positioning
         
         # Process image according to mode
-        img_data, img_normalised = process_image(image_paths2[i], mode_row2)
+        img_data, img_normalized = process_image(image_paths2[i], mode_row2)
         
-        # Display normalised image
-        ax.imshow(img_normalised, cmap='gray', vmin=0, vmax=1, aspect='equal')
+        # Display normalized image
+        ax.imshow(img_normalized, cmap='gray', vmin=0, vmax=1, aspect='equal')
         
         # Load and display bounding box
         bbox = load_bounding_box(label_paths2[i], *img_data.shape)
@@ -229,7 +251,7 @@ def crop_compare(image_list1, image_list2=None, base_dir='.',
             ax.text(
                 label_x, label_y, label_str,
                 color='lime',
-                fontsize=10,  # Slightly smaller for crop_compare grid layout
+                fontsize=8,  # Slightly smaller for crop_compare grid layout
                 verticalalignment='top',     # Top of label aligns with (x, y)
                 horizontalalignment='right'  # Right end of label aligns with (x, y)
             )
@@ -250,13 +272,18 @@ def crop_compare(image_list1, image_list2=None, base_dir='.',
             spine.set_linewidth(1)
 
     # Add vertical colorbar for second row (aligned with images)
-    cbar_ax2 = fig.add_subplot(gs[1, 5])  # Use GridSpec for colorbar too
+    cbar_ax2 = fig.add_subplot(gs[1, num_images])  # Use GridSpec for colorbar too
     cbar2 = ColorbarBase(cbar_ax2, cmap=cm.gray, norm=norm2, orientation='vertical')
     cbar2.set_label(label2, fontsize=10)
 
     # No tight_layout needed with GridSpec - spacing is controlled by GridSpec parameters
     plt.show()
     
-    print(f"Normalisation parameters - Magnitude: [{amp_min}, {amp_max}], Log-Magnitude: [{log_min}, {log_max}] dB, Real: [{real_min}, {real_max}]")
-    print(f"All images normalised to [0, 1] range using above parameters")
+    print(f"Crop comparison complete!")
+    if single_list_mode:
+        print(f"Single list mode: Top row = {mode_row1}, Bottom row = {mode_row2}")
+    else:
+        print(f"Two list mode: Top row = Set 1 ({mode_row1}), Bottom row = Set 2 ({mode_row2})")
+    print(f"Normalization parameters - Magnitude: [{amp_min}, {amp_max}], Log-Magnitude: [{log_min}, {log_max}] dB, Real: [{real_min}, {real_max}]")
+    print(f"All images normalized to [0, 1] range using above parameters")
 
