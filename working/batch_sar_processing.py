@@ -4,7 +4,7 @@
 batch_sar_processing.py
 
 Author: Peter Millitz
-Created: 2025-07-07
+Created: 2025-06-29
 
 Batch processing for SAR data. Processes all .npy files in a directory
 using the complex_scale_and_norm.py script. Processing parameters are 
@@ -64,7 +64,7 @@ def load_config(config_file: str = "config.yaml") -> dict:
     return config
 
 
-def validate_config(config: dict, base_dir: str) -> bool:
+def validate_config(config: dict, base_dir: str, data_split: str) -> bool:
     """
     Validate configuration parameters.
     
@@ -74,14 +74,23 @@ def validate_config(config: dict, base_dir: str) -> bool:
         Configuration dictionary
     base_dir : str
         Base directory path
+    data_split : str
+        Data split (train, val, test)
     
     Returns:
     --------
     bool
         True if configuration is valid
     """
+    # Get the input directory for the specified data split
+    if data_split not in config['input_dir']:
+        print(f"✗ Data split '{data_split}' not found in input_dir configuration")
+        return False
+    
+    input_dir = config['input_dir'][data_split]
+    
     # Check full input directory path
-    full_input_dir = Path(base_dir) / config['input_dir']
+    full_input_dir = Path(base_dir) / input_dir
     if not full_input_dir.exists():
         print(f"✗ Input directory does not exist: {full_input_dir}")
         return False
@@ -165,10 +174,13 @@ def get_output_path(input_file: Path, base_dir: str, output_dir: str) -> Path:
     return full_output_path / output_filename
 
 
-def build_command(input_file: Path, config: dict, base_dir: str) -> List[str]:
+def build_command(input_file: Path, config: dict, base_dir: str, data_split: str) -> List[str]:
     """Build command line arguments for the processing script."""
+    # Get the output directory for the specified data split
+    output_dir = config['output_dir'][data_split]
+    
     # Use full output directory path
-    full_output_dir = Path(base_dir) / config['output_dir']
+    full_output_dir = Path(base_dir) / output_dir
     
     cmd = [
         sys.executable,
@@ -188,17 +200,18 @@ def build_command(input_file: Path, config: dict, base_dir: str) -> List[str]:
     return cmd
 
 
-def process_single_file(input_file: Path, config: dict, base_dir: str, logger=None) -> Tuple[bool, str]:
+def process_single_file(input_file: Path, config: dict, base_dir: str, data_split: str, logger=None) -> Tuple[bool, str]:
     """Process a single SAR file."""
     try:
         # Check if output already exists
         if config['skip_existing']:
-            output_file = get_output_path(input_file, base_dir, config['output_dir'])
+            output_dir = config['output_dir'][data_split]
+            output_file = get_output_path(input_file, base_dir, output_dir)
             if output_file.exists():
                 return True, f"Skipped (output exists): {input_file.name}"
         
         # Build and execute command
-        cmd = build_command(input_file, config, base_dir)
+        cmd = build_command(input_file, config, base_dir, data_split)
         
         # Existing screen output (unchanged)
         if config['verbose']:
@@ -249,7 +262,7 @@ def process_single_file(input_file: Path, config: dict, base_dir: str, logger=No
         return False, error_msg
 
 
-def process_sequential(files: List[Path], config: dict, base_dir: str, logger=None) -> Tuple[int, int, List[str]]:
+def process_sequential(files: List[Path], config: dict, base_dir: str, data_split: str, logger=None) -> Tuple[int, int, List[str]]:
     """Process files sequentially."""
     successful = 0
     failed = 0
@@ -262,7 +275,7 @@ def process_sequential(files: List[Path], config: dict, base_dir: str, logger=No
         if logger:
             logger.info(f"Starting file {i}/{len(files)}: {file_path.name}")
         
-        success, message = process_single_file(file_path, config, base_dir, logger)
+        success, message = process_single_file(file_path, config, base_dir, data_split, logger)
         
         if success:
             successful += 1
@@ -279,13 +292,13 @@ def process_sequential(files: List[Path], config: dict, base_dir: str, logger=No
     return successful, failed, errors
 
 
-def process_parallel(files: List[Path], config: dict, base_dir: str, logger=None) -> Tuple[int, int, List[str]]:
+def process_parallel(files: List[Path], config: dict, base_dir: str, data_split: str, logger=None) -> Tuple[int, int, List[str]]:
     """Process files in parallel using multiprocessing."""
     try:
         from concurrent.futures import ProcessPoolExecutor, as_completed
     except ImportError:
         print("Warning: multiprocessing not available, falling back to sequential processing")
-        return process_sequential(files, config, base_dir, logger)
+        return process_sequential(files, config, base_dir, data_split, logger)
     
     successful = 0
     failed = 0
@@ -304,7 +317,7 @@ def process_parallel(files: List[Path], config: dict, base_dir: str, logger=None
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         # Submit all jobs
         future_to_file = {
-            executor.submit(process_single_file, file_path, config, base_dir, logger): file_path 
+            executor.submit(process_single_file, file_path, config, base_dir, data_split, logger): file_path 
             for file_path in files
         }
         
@@ -336,7 +349,7 @@ def process_parallel(files: List[Path], config: dict, base_dir: str, logger=None
     return successful, failed, errors
 
 
-def batch_process_sar_data(config_file: str = "config.yaml", base_dir: str = "."):
+def batch_process_sar_data(config_file: str = "config.yaml", base_dir: str = ".", data_split: str = "train"):
     """
     Main function to batch process SAR data.
     
@@ -346,6 +359,8 @@ def batch_process_sar_data(config_file: str = "config.yaml", base_dir: str = "."
         Path to YAML configuration file
     base_dir : str
         Base directory for input/output paths
+    data_split : str
+        Data split to process (train, val, test)
     """
     print("=" * 60)
     print("Batch SAR Data Processing")
@@ -361,24 +376,29 @@ def batch_process_sar_data(config_file: str = "config.yaml", base_dir: str = "."
         logger.info("Batch SAR processing started")
         logger.info(f"Configuration: {config}")
         logger.info(f"Base directory: {base_dir}")
+        logger.info(f"Data split: {data_split}")
     
     # Validate configuration
-    if not validate_config(config, base_dir):
+    if not validate_config(config, base_dir, data_split):
         return
     
     print("✓ Configuration validated")
     if logger:
         logger.info("Configuration validated successfully")
     
+    # Get directories for the specified data split
+    input_dir = config['input_dir'][data_split]
+    output_dir = config['output_dir'][data_split]
+    
     # Create output directory
-    full_output_dir = Path(base_dir) / config['output_dir']
+    full_output_dir = Path(base_dir) / output_dir
     full_output_dir.mkdir(parents=True, exist_ok=True)
     print(f"✓ Output directory: {full_output_dir}")
     if logger:
         logger.info(f"Output directory created/verified: {full_output_dir}")
     
     # Find input files
-    files = find_sar_files(base_dir, config['input_dir'], config['file_pattern'])
+    files = find_sar_files(base_dir, input_dir, config['file_pattern'])
     
     if not files:
         no_files_msg = "No files found to process!"
@@ -394,8 +414,9 @@ def batch_process_sar_data(config_file: str = "config.yaml", base_dir: str = "."
     # Display configuration
     print(f"\nProcessing Configuration:")
     print(f"  Base directory: {base_dir}")
-    print(f"  Input directory: {Path(base_dir) / config['input_dir']}")
-    print(f"  Output directory: {Path(base_dir) / config['output_dir']}")
+    print(f"  Data split: {data_split}")
+    print(f"  Input directory: {Path(base_dir) / input_dir}")
+    print(f"  Output directory: {Path(base_dir) / output_dir}")
     print(f"  NaN strategy: {config['nan_strategy']}")
     print(f"  Epsilon: {config['epsilon']}")
     print(f"  Global normalisation: {'Yes' if config['global_norm_params'] else 'Adaptive'}")
@@ -413,9 +434,9 @@ def batch_process_sar_data(config_file: str = "config.yaml", base_dir: str = "."
         logger.info(f"Start time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}")
     
     if config['max_workers']:
-        successful, failed, errors = process_parallel(files, config, base_dir, logger)
+        successful, failed, errors = process_parallel(files, config, base_dir, data_split, logger)
     else:
-        successful, failed, errors = process_sequential(files, config, base_dir, logger)
+        successful, failed, errors = process_sequential(files, config, base_dir, data_split, logger)
     
     end_time = time.time()
     processing_time = end_time - start_time
@@ -482,6 +503,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Batch process SAR data")
     parser.add_argument("--config", default="config.yaml", help="Configuration file (default: config.yaml)")
     parser.add_argument("--base-dir", required=True, help="Base directory for input/output paths")
+    parser.add_argument("--data-split", choices=["train", "val", "test"], required=True, help="Data split to process")
     parser.add_argument("--create-config", action="store_true", help="Create sample configuration file")
     
     args = parser.parse_args()
@@ -489,4 +511,4 @@ if __name__ == "__main__":
     if args.create_config:
         create_sample_config(args.config)
     else:
-        batch_process_sar_data(args.config, args.base_dir)
+        batch_process_sar_data(args.config, args.base_dir, args.data_split)
