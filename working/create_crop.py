@@ -3,8 +3,8 @@
 """
 create_crop.py
 
-Author: Peter Mllitz
-Created: 2025-07-07
+Author: Peter Millitz
+Created: 2025-07-12
 
 This script extracts image crops of a given size from raw 2D SAR image arrays based on vessel
 detection annotations and outputs them as NumPy arrays (.npy) with the same shape, along with
@@ -358,9 +358,14 @@ def find_matching_array(filename_stem, correspondence_row):
                 return swath_idx
     return None
 
-def main(config_file="config.yaml", base_dir="."):
+def main(config_file="config.yaml", base_dir=".", data_split="train"):
     """
     Main driver function to extract crops and labels for vessel detection from SAR SLC scenes.
+
+    Args:
+        config_file (str): Path to configuration YAML file
+        base_dir (str): Base directory for input/output paths
+        data_split (str): Data split to process ('train', 'val', or 'test')
 
     Steps:
     1. Load paths and settings from config.yaml
@@ -375,14 +380,15 @@ def main(config_file="config.yaml", base_dir="."):
     -----------------------------------------------------------------------
     Expected configuration keys in config.yaml:
     
-    xView3_SLC_GRD_correspondences_path: str
-        Relative Path to correspondence CSV file mapping scene IDs to SLC images
+    correspondences_path: str
+        Path to correspondence CSV file mapping scene IDs to SLC images
     annotations_path: str
-        Relative path to annotations CSV file mapping detection labels to SLC images
-    arrays_path: str
-        Relative path to directory containing .npy array files to process
-    crop_path: str
-        Output directory where cropped images and labels are saved
+        Path to annotations CSV file mapping detection labels to SLC images
+    data_paths:
+        arrays_path: dict
+            Dict with train/val/test keys pointing to directories containing .npy files
+    crop_path: dict
+        Dictionary with train/val/test keys pointing to output directories for crops
     crop_size: int
         Crop size (e.g., 64 for 64 x 64 crops)
     label_confidence: list[str]
@@ -391,8 +397,14 @@ def main(config_file="config.yaml", base_dir="."):
         If True, suppress detailed processing output (default: False)
     -----------------------------------------------------------------------
     """
-    # Initialize logger first (in current directory)
-    logger = Logger("crops_log", quiet_mode=False)  # Will be updated with actual quiet_mode
+    # Validate data_split parameter
+    if data_split not in ['train', 'val', 'test']:
+        print(f"Error: data_split must be 'train', 'val', or 'test', got '{data_split}'")
+        return
+    
+    # Initialize logger with data_split in filename
+    log_filename = f"crops_{data_split}_log.txt"
+    logger = Logger(log_filename, quiet_mode=False)  # Will be updated with actual quiet_mode
     
     # Load configuration from YAML
     try:
@@ -408,13 +420,25 @@ def main(config_file="config.yaml", base_dir="."):
         logger.print(f"Error: Invalid YAML configuration file: {e}", force_screen=True)
         logger.close()
         return
+    except KeyError as e:
+        logger.print(f"Error: Missing 'create_crop' section in config file: {e}", force_screen=True)
+        logger.close()
+        return
 
     # Resolve paths and parameters from config
     base_path = Path(base_dir)
     correspondence_path = Path(config["correspondences_path"])
     annotation_path = Path(config["annotations_path"])
-    arrays_path = base_path / config["arrays_path"]
-    crop_path = base_path / config["crop_path"]
+    
+    # Get data_split-specific paths
+    try:
+        arrays_path = base_path / uni_config["data_paths"]["arrays_path"][data_split]
+        crop_path = base_path / config["crop_path"][data_split]
+    except KeyError as e:
+        logger.print(f"Error: Missing {data_split} configuration in arrays_path or crop_path: {e}", force_screen=True)
+        logger.close()
+        return
+    
     crop_size = int(config["crop_size"])
     confidence_levels = config["label_confidence"]
     quiet_mode = config.get("quiet_mode", False) # Default to False if not specified
@@ -425,6 +449,11 @@ def main(config_file="config.yaml", base_dir="."):
     # Ensure confidence_levels is a list
     if isinstance(confidence_levels, str):
         confidence_levels = [confidence_levels]
+
+    # Log processing information
+    logger.print(f"Processing {data_split.upper()} split", force_screen=True)
+    logger.print(f"Input arrays path: {arrays_path}", force_screen=True)
+    logger.print(f"Output crops path: {crop_path}", force_screen=True)
 
     # Check if required files and directories exist
     if not correspondence_path.exists():
@@ -579,7 +608,7 @@ def main(config_file="config.yaml", base_dir="."):
     actual_label_count = len(list(out_lbl_dir.glob("*.txt")))
     
     logger.print(f"\n" + "="*60, force_screen=True)
-    logger.print(f"PROCESSING SUMMARY", force_screen=True)
+    logger.print(f"PROCESSING SUMMARY - {data_split.upper()} SPLIT", force_screen=True)
     logger.print(f"="*60, force_screen=True)
     logger.print(f"Number of input images processed: {len(npy_files)}", force_screen=True)
     logger.print(f"Total crops of size {crop_size} x {crop_size} created: {total_processed}", force_screen=True)
@@ -596,11 +625,12 @@ def main(config_file="config.yaml", base_dir="."):
     if actual_image_count != actual_label_count:
         logger.print(f"MISMATCH: Image count ({actual_image_count}) != Label count ({actual_label_count})", force_screen=True)
 
-    # Save summary CSV
+    # Save summary CSV with data_split in filename
     if summary:
         summary_df = pd.DataFrame(summary)
-        summary_df.to_csv(crop_path / "crop_summary.csv", index=False)
-        logger.print(f"Crop summary saved to: {crop_path / 'crop_summary.csv'}", force_screen=True)
+        summary_file = crop_path / f"crop_summary_{data_split}.csv"
+        summary_df.to_csv(summary_file, index=False)
+        logger.print(f"Crop summary saved to: {summary_file}", force_screen=True)
         logger.print(f"Total crops processed: {total_processed}", force_screen=True)
     else:
         logger.print("No crops were created.", force_screen=True)
@@ -614,7 +644,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Create crops from SAR data")
     parser.add_argument("--config", default="config.yaml", help="Configuration file (default: config.yaml)")
     parser.add_argument("--base-dir", required=True, help="Base directory for input/output paths")
+    parser.add_argument("--data-split", choices=['train', 'val', 'test'], required=True, 
+                       help="Data split to process (train, val, or test)")
     
     args = parser.parse_args()
-    main(args.config, args.base_dir)
-
+    main(args.config, args.base_dir, args.data_split)
