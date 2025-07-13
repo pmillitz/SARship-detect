@@ -12,10 +12,18 @@ import random
 import subprocess
 import csv
 
-
-def train_test_split(lst, test_ratio=0.1, seed=None):
+def train_val_test_split(lst, test_ratio=0.1, val_ratio=0.1, seed=None):
     """
-    Function to randomly allocate scene ids into train and test lists
+    Function to randomly allocate scene ids into train, validation, and test lists
+    
+    Args:
+        lst: List of items to split
+        test_ratio: Proportion of data for test set (default 0.1)
+        val_ratio: Proportion of data for validation set (default 0.1)
+        seed: Random seed for reproducibility (default None)
+    
+    Returns:
+        tuple: (train_set, val_set, test_set)
     """
     if seed is not None:
         random.seed(seed)
@@ -24,15 +32,22 @@ def train_test_split(lst, test_ratio=0.1, seed=None):
     shuffled = lst.copy()
     random.shuffle(shuffled)
     
-    # Calculate split point
+    # Calculate split points
     test_size = max(1, int(len(lst) * test_ratio))
+    val_size = int(len(lst) * val_ratio) if val_ratio > 0 else 0
+    
+    # Ensure we don't exceed the list length
+    total_holdout = test_size + val_size
+    if total_holdout >= len(lst):
+        raise ValueError(f"Combined test and validation ratios ({test_ratio + val_ratio}) are too large for dataset size {len(lst)}")
     
     # Split the data
     test_set = shuffled[:test_size]
-    train_set = shuffled[test_size:]
+    val_set = shuffled[test_size:test_size + val_size]
+    train_set = shuffled[test_size + val_size:]
     
-    return train_set, test_set
-
+    return train_set, val_set, test_set
+    
 def print_list_formatted(lst, items_per_row=10, var_name="scene_list"):
     """
     Function to print a scene list formatted
