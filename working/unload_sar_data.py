@@ -2,8 +2,8 @@
 """
 unload_sar_data.py
 
-Author: Peter Millitz
-Created: 2025-07-12
+Author:
+Created: 2025-07-13
 
 usage: unload_sar_data.py [-h]
                           [--pattern {slc-vh, slc-vv, grd-vh, grd-vv}]
@@ -85,7 +85,8 @@ def unload_one_file(tiff_path: Path, output_path: Path, quiet: bool = False) -> 
         try:
             loaded = load_GeoTiff(str(tiff_path))
         except Exception as load_error:
-            print(f"*** Error loading {tiff_path.name}: {load_error}")
+            if not quiet:
+                print(f"*** Error loading {tiff_path.name}: {load_error}")
             return {
                 'tiff_path': str(tiff_path),
                 'array_path': str(out_npy),
@@ -97,7 +98,8 @@ def unload_one_file(tiff_path: Path, output_path: Path, quiet: bool = False) -> 
         
         if not loaded or loaded[0] is None:
             error_msg = f"load_GeoTiff returned None for {tiff_path.name}"
-            print(f"*** Warning: {error_msg}")
+            if not quiet:
+                print(f"*** Warning: {error_msg}")
             return {
                 'tiff_path': str(tiff_path),
                 'array_path': str(out_npy),
@@ -112,7 +114,8 @@ def unload_one_file(tiff_path: Path, output_path: Path, quiet: bool = False) -> 
         # Validate the data array
         if data is None or data.size == 0:
             error_msg = f"Empty or invalid data array for {tiff_path.name}"
-            print(f"*** Warning: {error_msg}")
+            if not quiet:
+                print(f"*** Warning: {error_msg}")
             return {
                 'tiff_path': str(tiff_path),
                 'array_path': str(out_npy),
@@ -128,10 +131,12 @@ def unload_one_file(tiff_path: Path, output_path: Path, quiet: bool = False) -> 
         # Save the array
         try:
             np.save(str(out_npy), data)
-            print(f"Array saved as: {out_npy}")
+            if not quiet:
+                print(f"Array saved as: {out_npy}")
         except Exception as e:
             error_msg = f"Failed to save array for {tiff_path.name}: {e}"
-            print(f"*** Error: {error_msg}")
+            if not quiet:
+                print(f"*** Error: {error_msg}")
             return {
                 'tiff_path': str(tiff_path),
                 'array_path': str(out_npy),
@@ -157,7 +162,8 @@ def unload_one_file(tiff_path: Path, output_path: Path, quiet: bool = False) -> 
     except (TimeoutError, MemoryError, Exception) as e:
         error_type = type(e).__name__
         error_msg = f"{error_type} processing {tiff_path.name}: {e}"
-        print(f"*** {error_msg}")
+        if not quiet:
+            print(f"*** {error_msg}")
         return {
             'tiff_path': str(tiff_path),
             'array_path': str(out_npy) if 'out_npy' in locals() else '',
