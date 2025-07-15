@@ -3,9 +3,16 @@
 compute_sar_stats.py
 
 Author:
-Created: 2025-07-12
+Created: 2025-07-15
 
-usage: compute_sar_stats.py [-h] [-j JOBS] [-q(uiet)] input_path
+usage: compute_sar_stats.py [-h] [-q(uiet)] input_path
+
+positional arguments:
+  input_path   Path to the directory containing .npy files and manifest.json
+
+options:
+  -h, --help   show help message and exit
+  -q, --quiet  show only warnings and final summary
 
 Reads NumPy arrays from the specified input directory and computes statistics
 for SAR data. The input directory should contain .npy files created by
@@ -16,75 +23,10 @@ to a CSV file in the current working directory.
 import argparse
 import time
 import json
-import socket
-import os
 from pathlib import Path
 import gc
-import multiprocessing as mp
-from functools import partial
 import pandas as pd
 import numpy as np
-import psutil
-
-def detect_environment():
-    """
-    Detect if running in Jupyter notebook environment.
-    """
-    try:
-        # Check if we're in a Jupyter environment
-        shell = get_ipython().__class__.__name__
-        if shell == 'ZMQInteractiveShell':
-            return 'jupyter'
-    except NameError:
-        pass
-    return 'script'
-
-def get_optimal_workers(user_specified: int = None) -> tuple[int, str, str]:
-    """
-    Determine optimal number of workers based on system and environment.
-    Returns: (workers, system, environment)
-    """
-    # Detect environment first
-    environment = detect_environment()
-    
-    # Determine the current host
-    hostname = socket.gethostname()
-    if "kaya" in hostname.lower() or os.getenv("HPC_ENV") == "true":
-        system = "kaya"
-    else:
-        system = "local"
-    
-    # Get available CPU cores
-    cpu_count = mp.cpu_count()
-    
-    # Environment-specific handling
-    if environment == 'jupyter':
-        # Jupyter notebooks have multiprocessing issues - use conservative approach
-        if user_specified is not None and user_specified > 1:
-            print("Warning: Multiprocessing in Jupyter can be unstable. Consider using -j 1 for sequential processing.")
-            default_workers = min(user_specified, 4)  # Cap at 4 workers max in Jupyter
-        else:
-            default_workers = 1  # Default to sequential in Jupyter
-    else:
-        # Script environment - full multiprocessing support
-        if system == "kaya":
-            # HPC environment - can use more aggressive parallelization
-            slurm_cpus = os.getenv('SLURM_CPUS_PER_TASK')
-            if slurm_cpus:
-                default_workers = int(slurm_cpus)
-            else:
-                default_workers = max(1, cpu_count - 1)  # Leave one core free
-        else:
-            # Local system - more conservative
-            default_workers = max(1, min(cpu_count // 2, 8))  # Use half cores, max 8
-    
-    # Use user specification if provided, otherwise use system default
-    if user_specified is not None:
-        workers = min(user_specified, cpu_count)
-    else:
-        workers = default_workers
-    
-    return workers, system, environment
 
 # Compute statistics for SLC product
 def slc_stats(array):
@@ -224,8 +166,7 @@ def process_one_array(array_path: Path, file_info: dict, mode: str) -> dict:
     try:
         # Load the NumPy array
         try:
-            data = np.load(str(array_path), allow_pickle=False)
-            print(f"Loaded {array_path.name}: shape={data.shape}, size={data.size}, dtype={data.dtype}")
+            data = np.load(str(array_path))
         except Exception as load_error:
             print(f"*** Error loading {array_path.name}: {load_error}")
             return create_error_row(file_info)
@@ -234,84 +175,6 @@ def process_one_array(array_path: Path, file_info: dict, mode: str) -> dict:
         if data is None or data.size == 0:
             print(f"*** Warning: Empty or invalid data array for {array_path.name}")
             return create_error_row(file_info)
-
-        # Check array shape and fix if needed
-        if data.ndim == 1:
-            # Try to determine original shape from file size and data type
-            print(f"*** Warning: 1D array detected for {array_path.name} with {data.size} elements")
-            
-            total_elements = data.size
-            
-            # Calculate possible square dimensions
-            sqrt_elements = int(np.sqrt(total_elements))
-            
-            # Try common SAR image dimensions
-            possible_shapes = []
-            
-            # Perfect square
-            if sqrt_elements * sqrt_elements == total_elements:
-                possible_shapes.append((sqrt_elements, sqrt_elements))
-            
-            # Try factorization for rectangular shapes
-            # Look for factors close to square root
-            for width in range(max(1000, sqrt_elements - 1000), sqrt_elements + 1000):
-                if total_elements % width == 0:
-                    height = total_elements // width
-                    if abs(width - height) < max(width, height) * 0.5:  # Aspect ratio not too extreme
-                        possible_shapes.append((height, width))
-            
-            # Add some common SAR dimensions if they fit
-            common_widths = [25000, 20000, 15000, 10000, 5000]
-            for width in common_widths:
-                if total_elements % width == 0:
-                    height = total_elements // width
-                    possible_shapes.append((height, width))
-            
-            print(f"Possible shapes for {total_elements} elements: {possible_shapes[:5]}")  # Show first 5
-            
-            if possible_shapes:
-                new_shape = possible_shapes[0]  # Use the first valid shape
-                try:
-                    data = data.reshape(new_shape)
-                    print(f"Successfully reshaped {array_path.name} to {new_shape}")
-                except Exception as reshape_error:
-                    print(f"*** Error reshaping {array_path.name}: {reshape_error}")
-                    return create_error_row(file_info)
-            else:
-                print(f"*** Error: Cannot determine valid shape for {array_path.name} with {total_elements} elements")
-                return create_error_row(file_info)
-        
-        elif data.ndim > 2:
-            # Handle multi-dimensional arrays by flattening to 2D
-            print(f"*** Warning: {data.ndim}D array detected for {array_path.name} with shape {data.shape}")
-            original_shape = data.shape
-            try:
-                # Reshape to 2D by combining all but the last dimension
-                if data.ndim == 3:
-                    data = data.reshape(original_shape[0] * original_shape[1], original_shape[2])
-                else:
-                    data = data.reshape(original_shape[0], -1)
-                print(f"Reshaped from {original_shape} to {data.shape}")
-            except Exception as reshape_error:
-                print(f"*** Error reshaping multi-dimensional array {array_path.name}: {reshape_error}")
-                return create_error_row(file_info)
-        else:
-            # Already 2D - show dimensions for confirmation
-            print(f"2D array: {data.shape}")
-
-        # Ensure we have a 2D array
-        if data.ndim != 2:
-            print(f"*** Error: Final array for {array_path.name} is not 2D (shape: {data.shape})")
-            return create_error_row(file_info)
-
-        # Additional validation for data type
-        if "slc" in mode.lower() and not np.iscomplexobj(data):
-            print(f"*** Warning: SLC data expected to be complex, but got {data.dtype} for {array_path.name}")
-        elif "grd" in mode.lower() and np.iscomplexobj(data):
-            print(f"*** Warning: GRD data expected to be real, but got complex data for {array_path.name}")
-            # Convert complex to real by taking magnitude
-            data = np.abs(data)
-            print(f"Converted complex GRD data to magnitude for {array_path.name}")
 
         # Compute statistics using relevant function
         if "grd" in mode:
@@ -350,184 +213,40 @@ def process_one_array(array_path: Path, file_info: dict, mode: str) -> dict:
                 pass
         gc.collect()
 
-def process_one_array_wrapper(args):
+def process_arrays(manifest_data: dict, input_path: Path, quiet: bool = False) -> list[dict]:
     """
-    Wrapper function for multiprocessing. Unpacks arguments and calls process_one_array.
+    Process all arrays listed in the manifest.
     """
-    file_info, mode, quiet = args
-    array_path = Path(file_info['array_path'])
-    
-    # Double-check file exists (should have been filtered already)
-    if not array_path.exists():
-        if not quiet:
-            print(f"*** Warning: Array file not found during processing: {array_path}")
-        return create_error_row(file_info)
-    
-    return process_one_array(array_path, file_info, mode)
-
-def process_arrays(manifest_data: dict, input_path: Path, quiet: bool = False, n_workers: int = None) -> list[dict]:
-    """
-    Process all arrays listed in the manifest using parallel processing with timeout protection.
-    """
+    rows = []
     files_info = manifest_data.get('files', [])
     mode = manifest_data.get('pattern', 'slc-vh')
     
-    # Filter for successfully unloaded files AND check if they actually exist
-    successful_files = []
-    missing_files = 0
-    
-    for f in files_info:
-        if f['status'] == 'success':
-            array_path = Path(f['array_path'])
-            if array_path.exists():
-                successful_files.append(f)
-            else:
-                missing_files += 1
-                if not quiet:
-                    print(f"*** Warning: Array file not found: {array_path}")
-    
+    # Filter for successfully unloaded files
+    successful_files = [f for f in files_info if f['status'] == 'success']
     total_files = len(successful_files)
     
     if total_files == 0:
-        print("No valid array files found in manifest")
-        if missing_files > 0:
-            print(f"Note: {missing_files} files listed in manifest but not found on disk")
-        return []
+        print("No successfully unloaded files found in manifest")
+        return rows
     
-    if missing_files > 0:
-        print(f"Found {total_files} valid arrays ({missing_files} missing from manifest)")
-    
-    # Determine optimal number of workers using host detection
-    optimal_workers, system, environment = get_optimal_workers(n_workers)
-    
-    # For large files (>1GB), be more conservative with workers
-    sample_file = Path(successful_files[0]['array_path'])
-    if sample_file.exists():
-        file_size_gb = sample_file.stat().st_size / (1024**3)
-        if file_size_gb > 1.0:
-            # Reduce workers for large files to prevent memory issues
-            memory_limited_workers = max(1, min(optimal_workers, 4))
-            if memory_limited_workers < optimal_workers:
-                print(f"Large files detected ({file_size_gb:.1f}GB), reducing workers from {optimal_workers} to {memory_limited_workers}")
-                optimal_workers = memory_limited_workers
-    
-    if not quiet:
-        print(f"Detected system: {system}")
-        print(f"Environment: {environment}")
-        if environment == 'jupyter' and optimal_workers > 1:
-            print("Note: Running in Jupyter - multiprocessing may be less stable")
-        if n_workers is not None:
-            print(f"Using user-specified {optimal_workers} workers")
-        else:
-            print(f"Using auto-detected {optimal_workers} workers")
-        print(f"Processing {total_files} arrays")
-    
-    # Prepare arguments for parallel processing - only for existing files
-    args_list = [(file_info, mode, quiet) for file_info in successful_files]
-    
-    if optimal_workers == 1:
-        # Sequential processing
-        rows = []
-        for idx, args in enumerate(args_list, start=1):
-            if not quiet:
-                print(f"Processing array {idx}/{total_files}: {Path(args[0]['array_path']).name}")
-                start_time = time.time()
-            
-            row = process_one_array_wrapper(args)
-            rows.append(row)
-            
-            if not quiet:
-                elapsed = time.time() - start_time
-                print(f"Finished {Path(args[0]['array_path']).name} in {elapsed:.2f} seconds.\n")
-    else:
-        # Parallel processing with timeout and progress monitoring
-        import signal
-        import threading
-        import time as time_module
+    for idx, file_info in enumerate(successful_files, start=1):
+        array_path = Path(file_info['array_path'])
         
-        def timeout_handler(signum, frame):
-            raise TimeoutError("Processing timeout - workers may be stuck")
+        if not array_path.exists():
+            print(f"*** Warning: Array file not found: {array_path}")
+            rows.append(create_error_row(file_info))
+            continue
         
-        rows = []
-        try:
-            with mp.Pool(processes=optimal_workers) as pool:
-                if not quiet:
-                    print("Starting parallel processing...")
-                
-                # Set up shorter timeout for testing (5 minutes instead of 30)
-                signal.signal(signal.SIGALRM, timeout_handler)
-                signal.alarm(300)  # 5 minute timeout for debugging
-                
-                # Use map_async for better control and immediate feedback
-                progress_interval = max(1, total_files // 20)  # Update every 5%
-                completed = 0
-                start_time = time_module.time()
-                
-                try:
-                    # Submit all jobs and track them
-                    print(f"Submitting {len(args_list)} jobs to {optimal_workers} workers...")
-                    result = pool.map_async(process_one_array_wrapper, args_list, chunksize=1)
-                    
-                    # Poll for completion with timeout
-                    while not result.ready():
-                        time_module.sleep(10)  # Check every 10 seconds
-                        elapsed = time_module.time() - start_time
-                        print(f"Still processing... {elapsed:.0f}s elapsed (timeout in {300-elapsed:.0f}s)")
-                        
-                        # Check memory usage
-                        memory_percent = psutil.virtual_memory().percent
-                        if memory_percent > 85:
-                            print(f"Warning: High memory usage ({memory_percent:.1f}%)")
-                    
-                    # Get results
-                    print("Workers completed, collecting results...")
-                    rows = result.get(timeout=60)  # 1 minute to collect results
-                    print(f"Successfully collected {len(rows)} results")
-                
-                except mp.TimeoutError:
-                    print("*** Timeout waiting for worker results")
-                    print("This suggests workers are stuck - falling back to sequential processing")
-                    # Don't return empty results, fall through to sequential fallback
-                    rows = []
-                
-                except Exception as e:
-                    print(f"Error during parallel processing: {e}")
-                    print("Attempting to continue with completed results...")
-                    rows = []
-                
-                finally:
-                    signal.alarm(0)  # Cancel timeout
-                    
-        except TimeoutError:
-            print("Processing timed out after 5 minutes")
-            print(f"Workers appear to be stuck - this often happens with large arrays in multiprocessing")
-            print("Falling back to sequential processing...")
-            rows = []
-        except Exception as e:
-            print(f"Parallel processing failed: {e}")
-            print("Falling back to sequential processing...")
-            rows = []
+        if not quiet:
+            print(f"Processing array {idx}/{total_files}: {array_path.name}")
+            start_time = time.time()
         
-        # If parallel processing failed or returned no results, fall back to sequential
-        if not rows:
-            print("\n=== FALLING BACK TO SEQUENTIAL PROCESSING ===")
-            print("This is more reliable for large arrays but will be slower...")
-            
-            for idx, args in enumerate(args_list, start=1):
-                if not quiet:
-                    print(f"\nProcessing array {idx}/{total_files}: {Path(args[0]['array_path']).name}")
-                    start_time = time_module.time()
-                
-                row = process_one_array_wrapper(args)
-                rows.append(row)
-                
-                if not quiet:
-                    elapsed = time_module.time() - start_time
-                    print(f"Completed in {elapsed:.2f} seconds")
-                    
-                    # Show progress
-                    progress = idx / total_files * 100
-                    print(f"Progress: {idx}/{total_files} ({progress:.1f}%)")
+        row = process_one_array(array_path, file_info, mode)
+        rows.append(row)
+
+        if not quiet:
+            elapsed = time.time() - start_time
+            print(f"Finished {array_path.name} in {elapsed:.2f} seconds.\n")
     
     return rows
 
@@ -589,12 +308,6 @@ def main():
         help="Path to the directory containing .npy files and manifest.json"
     )
     parser.add_argument(
-        "-j", "--jobs",
-        type=int,
-        default=None,
-        help="Number of parallel workers (default: auto-detect based on CPU cores)"
-    )
-    parser.add_argument(
         "-q", "--quiet",
         action="store_true",
         help="Suppress per-file progress messages; only warnings and final summary are shown"
@@ -602,7 +315,6 @@ def main():
    
     args = parser.parse_args()
     input_path = args.input_path
-    n_workers = args.jobs
     quiet = args.quiet
 
     if not input_path.is_dir():
@@ -629,7 +341,7 @@ def main():
 
     # Process arrays
     start_time = time.time()
-    rows = process_arrays(manifest_data, input_path, quiet, n_workers)
+    rows = process_arrays(manifest_data, input_path, quiet)
     processing_time = time.time() - start_time
 
     if not rows:
@@ -681,14 +393,7 @@ def main():
     print(f"Total processing time: {processing_time:.2f} seconds")
     if len(rows) > 0:
         print(f"Average time per array: {processing_time/len(rows):.2f} seconds")
-    
-    # Show worker info in final summary
-    optimal_workers, system, environment = get_optimal_workers(n_workers)
-    if optimal_workers > 1:
-        print(f"Used {optimal_workers} parallel workers on {system} system ({environment} environment)")
 
 
 if __name__ == "__main__":
-    # Required for multiprocessing on Windows
-    mp.set_start_method('spawn', force=True)
     main()
