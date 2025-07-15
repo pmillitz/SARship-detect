@@ -101,6 +101,23 @@ def load_and_scale_sentinel_1_image(image_filepath: str) -> Tuple[
     return scale_sentinel_1_image(data, nodata_mask, product_type), nodata_mask
 
 class SARFish_Plot(scene.SceneCanvas):
+#    def __init__(
+#            self, data: np.ndarray, nodata_mask: np.ndarray, 
+#            title: str = "SARFish product", show: bool = True, 
+#            keys: str = 'interactive', cmap = 'Greys_r', 
+#            clim: Tuple[int] = None, **kwargs,
+#        ):
+#        scene.SceneCanvas.__init__(
+#            self, title = title, show = show, keys = keys, **kwargs
+#        )
+#        self.unfreeze()
+#        #self.size = (3840, 2160) # 4K vispy does coordinates in x, y order
+#        self.size = (1440, 900)
+#        #self.size = tuple(elem/2 for elem in self.size)
+#        self.view = self.central_widget.add_view()
+#        self.data_shape = data.shape
+#        self.cmap = cmap
+#        self.clim = clim
     def __init__(
             self, data: np.ndarray, nodata_mask: np.ndarray, 
             title: str = "SARFish product", show: bool = True, 
@@ -115,6 +132,8 @@ class SARFish_Plot(scene.SceneCanvas):
         self.size = (1440, 900)
         #self.size = tuple(elem/2 for elem in self.size)
         self.view = self.central_widget.add_view()
+        self.data = data  # Store data for pixel value lookup
+        self.nodata_mask = nodata_mask  # Store mask for checking masked pixels
         self.data_shape = data.shape
         self.cmap = cmap
         self.clim = clim
@@ -276,10 +295,36 @@ class SARFish_Plot(scene.SceneCanvas):
         
         self.translate_label_categories()
 
+#    def on_mouse_move(self, event: app.canvas.MouseEvent):
+#        self.mouse_pos = self.transform.map(event.pos)[:2]
+#        previous_mouse_pixel_pos = self.mouse_pixel_pos
+#        self.mouse_pixel_pos = np.floor(self.mouse_pos)
+#        if previous_mouse_pixel_pos is None:
+#            return
+#
+#        if (
+#            (previous_mouse_pixel_pos == self.mouse_pixel_pos).all() and
+#            (event.button is None)
+#        ):
+#            return
+#
+#        self.mouse_position_text.pos = self.transform.map([0, self.font_size])[:2]
+#        if (
+#            not (
+#                (0 <= self.mouse_pixel_pos[0] <= self.data_shape[1]) and
+#                (0 <= self.mouse_pixel_pos[1] <= self.data_shape[0])
+#            ) and (self.mouse_position_text is not None)
+#        ):
+#            self.mouse_position_text.text = None
+#            return
+#
+#        self.mouse_position_text.text = (
+#            f'(x, y): {self.mouse_pixel_pos[0], self.mouse_pixel_pos[1]}'
+#        )
     def on_mouse_move(self, event: app.canvas.MouseEvent):
         self.mouse_pos = self.transform.map(event.pos)[:2]
         previous_mouse_pixel_pos = self.mouse_pixel_pos
-        self.mouse_pixel_pos = np.floor(self.mouse_pos)
+        self.mouse_pixel_pos = np.floor(self.mouse_pos).astype(int)
         if previous_mouse_pixel_pos is None:
             return
 
@@ -290,19 +335,33 @@ class SARFish_Plot(scene.SceneCanvas):
             return
 
         self.mouse_position_text.pos = self.transform.map([0, self.font_size])[:2]
-        if (
-            not (
-                (0 <= self.mouse_pixel_pos[0] <= self.data_shape[1]) and
-                (0 <= self.mouse_pixel_pos[1] <= self.data_shape[0])
-            ) and (self.mouse_position_text is not None)
+        
+        # Check if mouse is within image bounds
+        if not (
+            (0 <= self.mouse_pixel_pos[0] < self.data_shape[1]) and
+            (0 <= self.mouse_pixel_pos[1] < self.data_shape[0])
         ):
-            self.mouse_position_text.text = None
+            if self.mouse_position_text is not None:
+                self.mouse_position_text.text = None
             return
 
-        self.mouse_position_text.text = (
-            f'(x, y): {self.mouse_pixel_pos[0], self.mouse_pixel_pos[1]}'
-        )
-    
+        # Get pixel value at current position
+        # Note: VisPy uses (x,y) but numpy arrays are indexed as [y,x]
+        pixel_value = self.data[self.mouse_pixel_pos[1], self.mouse_pixel_pos[0]]
+        is_masked = self.nodata_mask[self.mouse_pixel_pos[1], self.mouse_pixel_pos[0]]
+        
+        # Update text to include coordinates and pixel value
+        if is_masked:
+            self.mouse_position_text.text = (
+                f'(x, y): {self.mouse_pixel_pos[0], self.mouse_pixel_pos[1]}, '
+                f'value: masked'
+            )
+        else:
+            self.mouse_position_text.text = (
+                f'(x, y): {self.mouse_pixel_pos[0], self.mouse_pixel_pos[1]}, '
+                f'value: {pixel_value:.2f}'
+            )    
+
     def on_mouse_press(self, event: app.canvas.MouseEvent):
         # https://github.com/vispy/vispy/blob/main/vispy/app/canvas.py#L453
         if len(self.label_objects) == 0:
