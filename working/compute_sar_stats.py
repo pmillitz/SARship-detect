@@ -159,22 +159,47 @@ def create_error_row(file_info: dict) -> dict:
         "filename": file_info.get('filename', '')
     }
 
-def process_one_array(array_path: Path, file_info: dict, mode: str) -> dict:
+def process_one_array(array_path: Path, file_info: dict, mode: str, quiet: bool = False) -> dict:
     """
-    Process a single NumPy array file with optimised statistics computation.
+    Process a single NumPy array file with shape recovery and statistics computation.
     """
     try:
         # Load the NumPy array
         try:
-            data = np.load(str(array_path))
+            data = np.load(str(array_path), allow_pickle=False)
+            if not quiet:
+                print(f"Loaded {array_path.name}: shape={data.shape}, size={data.size}, dtype={data.dtype}")
         except Exception as load_error:
-            print(f"*** Error loading {array_path.name}: {load_error}")
+            if not quiet:
+                print(f"*** Error loading {array_path.name}: {load_error}")
             return create_error_row(file_info)
         
         # Validate the data array
         if data is None or data.size == 0:
-            print(f"*** Warning: Empty or invalid data array for {array_path.name}")
+            if not quiet:
+                print(f"*** Warning: Empty or invalid data array for {array_path.name}")
             return create_error_row(file_info)
+
+        # Check array dimensions - must be 2D
+        if data.ndim != 2:
+            if not quiet:
+                print(f"*** Error: Array {array_path.name} has {data.ndim} dimensions, expected 2D. Shape: {data.shape}")
+            return create_error_row(file_info)
+        
+        if not quiet:
+            print(f"2D array: {data.shape}")
+
+        # Validate data type for mode
+        if "slc" in mode.lower() and not np.iscomplexobj(data):
+            if not quiet:
+                print(f"*** Warning: SLC data expected to be complex, but got {data.dtype} for {array_path.name}")
+        elif "grd" in mode.lower() and np.iscomplexobj(data):
+            if not quiet:
+                print(f"*** Warning: GRD data expected to be real, but got complex data for {array_path.name}")
+            # Convert complex to real by taking magnitude
+            data = np.abs(data)
+            if not quiet:
+                print(f"Converted complex GRD data to magnitude for {array_path.name}")
 
         # Compute statistics using relevant function
         if "grd" in mode:
@@ -189,7 +214,8 @@ def process_one_array(array_path: Path, file_info: dict, mode: str) -> dict:
         gc.collect()
 
         if stats_dict is None:
-            print(f"*** Warning: {stats_name} returned None for {array_path.name}.")
+            if not quiet:
+                print(f"*** Warning: {stats_name} returned None for {array_path.name}.")
             return create_error_row(file_info)
 
         # Create row with metadata from file_info
@@ -202,7 +228,8 @@ def process_one_array(array_path: Path, file_info: dict, mode: str) -> dict:
         
     except Exception as e:
         error_type = type(e).__name__
-        print(f"*** {error_type} processing {array_path.name}: {e}")
+        if not quiet:
+            print(f"*** {error_type} processing {array_path.name}: {e}")
         return create_error_row(file_info)
     finally:
         # Force cleanup
@@ -212,43 +239,6 @@ def process_one_array(array_path: Path, file_info: dict, mode: str) -> dict:
             except:
                 pass
         gc.collect()
-
-def process_arrays(manifest_data: dict, input_path: Path, quiet: bool = False) -> list[dict]:
-    """
-    Process all arrays listed in the manifest.
-    """
-    rows = []
-    files_info = manifest_data.get('files', [])
-    mode = manifest_data.get('pattern', 'slc-vh')
-    
-    # Filter for successfully unloaded files
-    successful_files = [f for f in files_info if f['status'] == 'success']
-    total_files = len(successful_files)
-    
-    if total_files == 0:
-        print("No successfully unloaded files found in manifest")
-        return rows
-    
-    for idx, file_info in enumerate(successful_files, start=1):
-        array_path = Path(file_info['array_path'])
-        
-        if not array_path.exists():
-            print(f"*** Warning: Array file not found: {array_path}")
-            rows.append(create_error_row(file_info))
-            continue
-        
-        if not quiet:
-            print(f"Processing array {idx}/{total_files}: {array_path.name}")
-            start_time = time.time()
-        
-        row = process_one_array(array_path, file_info, mode)
-        rows.append(row)
-
-        if not quiet:
-            elapsed = time.time() - start_time
-            print(f"Finished {array_path.name} in {elapsed:.2f} seconds.\n")
-    
-    return rows
 
 def add_scene_id(df: pd.DataFrame, correspondence_file: Path) -> tuple[pd.DataFrame, int]:
     """
@@ -298,7 +288,7 @@ def add_scene_id(df: pd.DataFrame, correspondence_file: Path) -> tuple[pd.DataFr
 def main():
     parser = argparse.ArgumentParser(
         description=(
-            "Process NumPy arrays created by unload_sar_data.py and compute statistics. "
+            "Process NumPy arrays and compute statistics. "
             "The input directory should contain .npy files and a manifest.json file."
         )
     )
@@ -339,9 +329,54 @@ def main():
         print(f"Processing {mode} arrays from: {input_path}")
         print(f"Manifest contains {len(manifest_data.get('files', []))} file entries")
 
-    # Process arrays
+    # Filter for successfully unloaded files AND check if they actually exist
+    files_info = manifest_data.get('files', [])
+    successful_files = []
+    missing_files = 0
+    
+    for f in files_info:
+        if f['status'] == 'success':
+            array_path = Path(f['array_path'])
+            if array_path.exists():
+                successful_files.append(f)
+            else:
+                missing_files += 1
+                if not quiet:
+                    print(f"*** Warning: Array file not found: {array_path}")
+    
+    total_files = len(successful_files)
+    
+    if total_files == 0:
+        print("No valid array files found in manifest")
+        if missing_files > 0:
+            print(f"Note: {missing_files} files listed in manifest but not found on disk")
+        return
+
+    if missing_files > 0:
+        print(f"Found {total_files} valid arrays ({missing_files} missing from manifest)")
+
+    # Process arrays sequentially
     start_time = time.time()
-    rows = process_arrays(manifest_data, input_path, quiet)
+    rows = []
+    
+    for idx, file_info in enumerate(successful_files, start=1):
+        array_path = Path(file_info['array_path'])
+        
+        if not quiet:
+            print(f"\nProcessing array {idx}/{total_files}: {array_path.name}")
+            file_start_time = time.time()
+        
+        row = process_one_array(array_path, file_info, mode, quiet)
+        rows.append(row)
+
+        if not quiet:
+            elapsed = time.time() - file_start_time
+            print(f"Completed in {elapsed:.2f} seconds")
+            
+            # Show progress
+            progress = idx / total_files * 100
+            print(f"Progress: {idx}/{total_files} ({progress:.1f}%)")
+
     processing_time = time.time() - start_time
 
     if not rows:
@@ -387,7 +422,7 @@ def main():
     output_csv = Path.cwd() / f"{mode}_stats.csv"
     df_with_scene.to_csv(output_csv, index=False)
 
-    print(f"Stats for {len(df)} array(s) written to: {output_csv}")
+    print(f"\nStats for {len(df)} array(s) written to: {output_csv}")
     if missing_count > 0:
         print(f"Note: {missing_count} files could not be mapped to scene_id")
     print(f"Total processing time: {processing_time:.2f} seconds")
