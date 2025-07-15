@@ -4,13 +4,19 @@ utility.py
 A set of helper functions.
 
 Author: Peter Millitz
-Created: 2025-06-27
+Created: 2025-07-14
 
 """
 
 import random
 import subprocess
 import csv
+import numpy as np
+import cv2
+import yaml
+import shutil
+from pathlib import Path
+from tqdm import tqdm
 
 def train_val_test_split(lst, test_ratio=0.1, val_ratio=0.1, seed=None):
     """
@@ -47,7 +53,105 @@ def train_val_test_split(lst, test_ratio=0.1, val_ratio=0.1, seed=None):
     train_set = shuffled[test_size + val_size:]
     
     return train_set, val_set, test_set
+
+def convert_sar_dataset_to_png(npy_data_path, data_split="train", output_base_dir=None):
+    """
+    Convert SAR dataset from .npy to .png format for a specific data split.
     
+    Args:
+        npy_data_path (str or Path): Path to the directory containing .npy files
+        data_split (str): Data split to convert ('train', 'val', 'test')
+        output_base_dir (str or Path, optional): Base directory for PNG output. 
+                         If None, creates 'data_png' in parent of npy_data_path
+    Returns:
+        tuple: (png_data_dir, train_yaml_path)
+    """
+    print(f" Converting SAR Dataset ({data_split}) to PNG Format..")
+    
+    # Setup paths
+    npy_data_path = Path(npy_data_path)
+    if output_base_dir is None:
+        output_base_dir = npy_data_path.parent / "data_png"
+    else:
+        output_base_dir = Path(output_base_dir)
+    
+    # Create PNG dataset structure
+    png_img_dir = output_base_dir / "images" / data_split
+    png_lbl_dir = output_base_dir / "labels" / data_split
+    
+    png_img_dir.mkdir(parents=True, exist_ok=True)
+    png_lbl_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Get all .npy files
+    npy_files = list((npy_data_path / "images" / data_split).glob("*.npy"))
+    print(f"Found {len(npy_files)} .npy files to convert")
+    
+    if not npy_files:
+        print(f"No .npy files found in {npy_data_path / 'images' / data_split}")
+        return output_base_dir, None
+    
+    # Convert with progress bar
+    converted = 0
+    failed = 0
+    
+    for npy_file in tqdm(npy_files, desc=f"Converting {data_split}"):
+        try:
+            # Load SAR data (3, H, W) float32 [0,1] - variable dimensions
+            arr = np.load(npy_file).astype(np.float32)
+            
+            # Convert to standard image format
+            if arr.shape[0] == 3:  # (3, H, W) to (H, W, 3)
+                arr = np.transpose(arr, (1, 2, 0))
+           
+            # Convert to uint8 [0, 255]
+            arr = (arr * 255).astype(np.uint8)
+            
+            # Save as PNG
+            png_file = png_img_dir / f"{npy_file.stem}.png"
+            success = cv2.imwrite(str(png_file), arr)
+            
+            if success:
+                # Copy corresponding label
+                label_file = npy_data_path / "labels" / data_split / f"{npy_file.stem}.txt"
+                if label_file.exists():
+                    new_label_file = png_lbl_dir / f"{npy_file.stem}.txt"
+                    shutil.copy(label_file, new_label_file)
+                    converted += 1
+                else:
+                    print(f"Warning: No label for {npy_file.name}")
+            else:
+                failed += 1
+                
+        except Exception as e:
+            failed += 1
+            if failed <= 5:  # Show first 5 errors
+                print(f"Error with {npy_file.name}: {e}")
+    
+    print(f"Conversion complete: {converted} successful, {failed} failed")
+    
+    # Create/update training YAML only if this is the first split or if it doesn't exist
+    yaml_path = output_base_dir / "data.yaml"
+    if not yaml_path.exists():
+        yaml_content = {
+            'path': str(output_base_dir),
+            'train': 'images/train',
+            'val': 'images/val',
+            'test': 'images/test',
+            'nc': 2,
+            'names': {
+                0: 'non_fishing_vessel',
+                1: 'fishing_vessel'
+            }
+        }
+        
+        with open(yaml_path, 'w') as f:
+            yaml.dump(yaml_content, f, default_flow_style=False)
+
+    print(f"PNG Dataset: {output_base_dir}")    
+    print(f"Created data.yaml at {yaml_path}")
+
+    return output_base_dir, yaml_path
+   
 def print_list_formatted(lst, items_per_row=10, var_name="scene_list"):
     """
     Function to print a scene list formatted
