@@ -21,7 +21,9 @@ create_crop:
     train:              SLC/train/crops/
     val:                SLC/val/crops/
     test:               SLC/test/crops/
-  crop_size:            96
+  crop_size:            96 
+  use_spatial_indexing: False
+  min_crop_distance:    512
   label_confidence:     ['HIGH', 'MEDIUM']
   quiet_mode:           True
 
