@@ -58,6 +58,12 @@ if you stashed:
 git stash pop
 ```
 
+If you receive an error message warning local changes will be overwritten by a merge and you don't want to save those local changes, undo the changes as follows, then issue a git pull:
+
+```bash
+git restore <path of file>
+```
+
 # B. Configuring the Jupyter notebook
 
 1. Check that the `config.yaml` file looks like this:
