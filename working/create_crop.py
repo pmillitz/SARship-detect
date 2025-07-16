@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 
 """
-create_crop.py
+create_crop_v2.py
 
 Author: Peter Millitz
 Created: 2025-07-12
+Modified: 2025-07-15 - Added support for spatial indexing module
 
 This script extracts image crops of a given size from raw 2D SAR image arrays based on vessel
 detection annotations and outputs them as NumPy arrays (.npy) with the same shape, along with
@@ -13,6 +14,10 @@ uses a padding strategy for edge cases where a detection centre is close to an i
 Zero padding is used as the default value for complex64 SAR data. The crop size, label
 confidence level and other parameters are specified via the config.yaml file. A summary CSV
 file listing processing statisitcs for each input image, is also output.
+
+NEW in v2: Supports spatial indexing for efficient multi-object crops when processing
+large crop sizes (e.g., 1024x1024). Automatically detects and uses spatial_processor module
+when available and appropriate.
 """
 
 import pandas as pd
@@ -21,6 +26,14 @@ import yaml
 from pathlib import Path
 import sys
 from datetime import datetime
+
+# NEW: Try to import spatial processing module
+try:
+    from spatial_processor import SpatialCropProcessor, process_scene_with_spatial_indexing
+    SPATIAL_AVAILABLE = True
+except ImportError:
+    SPATIAL_AVAILABLE = False
+    print("Warning: spatial_processor module not found. Spatial indexing will be disabled.")
 
 class Logger:
     """Logger class to handle both file and console output based on quiet mode."""
@@ -361,6 +374,9 @@ def find_matching_array(filename_stem, correspondence_row):
 def main(config_file="config.yaml", base_dir=".", data_split="train"):
     """
     Main driver function to extract crops and labels for vessel detection from SAR SLC scenes.
+    
+    NEW in v2: Supports spatial indexing for efficient multi-object crops when processing
+    large crop sizes. Automatically detects and uses spatial_processor module when available.
 
     Args:
         config_file (str): Path to configuration YAML file
@@ -375,7 +391,9 @@ def main(config_file="config.yaml", base_dir=".", data_split="train"):
     5. For each .npy file:
        a. Find matching entry in correspondence file by filename stem
        b. Filter annotations for that scene by confidence and vessel criteria
-       c. Process each valid annotation to create crops named by detect_id
+       c. Process annotations using either:
+          - Spatial indexing (for large crops) - creates fewer crops with multiple annotations
+          - Original method - one crop per annotation
     6. Generate a summary CSV of the number of crops created per scene
     -----------------------------------------------------------------------
     Expected configuration keys in config.yaml:
@@ -395,6 +413,10 @@ def main(config_file="config.yaml", base_dir=".", data_split="train"):
         Confidence levels to include (e.g., ["HIGH", "MEDIUM"])
     quiet_mode: bool (optional)
         If True, suppress detailed processing output (default: False)
+    use_spatial_indexing: bool (optional)
+        If True, use spatial indexing for multi-object crops (default: auto for large crops)
+    min_crop_distance: int (optional)
+        Minimum distance between crop centers when using spatial indexing (default: crop_size/2)
     -----------------------------------------------------------------------
     """
     # Validate data_split parameter
@@ -443,6 +465,22 @@ def main(config_file="config.yaml", base_dir=".", data_split="train"):
     confidence_levels = config["label_confidence"]
     quiet_mode = config.get("quiet_mode", False) # Default to False if not specified
     
+    # NEW: Spatial indexing parameters
+    use_spatial_indexing = config.get("use_spatial_indexing", False)
+    if use_spatial_indexing and not SPATIAL_AVAILABLE:
+        logger.print("Warning: Spatial indexing requested but module not available. " 
+                    "Falling back to original processing.", force_screen=True)
+        use_spatial_indexing = False
+    
+    min_crop_distance = config.get("min_crop_distance", crop_size // 2)
+    
+    # Auto-enable spatial indexing for large crops if not explicitly set
+    if "use_spatial_indexing" not in config and crop_size >= 256:
+        use_spatial_indexing = SPATIAL_AVAILABLE
+        if use_spatial_indexing:
+            logger.print(f"Auto-enabling spatial indexing for crop_size={crop_size}", 
+                        force_screen=True)
+    
     # Update logger with correct quiet_mode setting
     logger.quiet_mode = quiet_mode
     
@@ -454,6 +492,13 @@ def main(config_file="config.yaml", base_dir=".", data_split="train"):
     logger.print(f"Processing {data_split.upper()} split", force_screen=True)
     logger.print(f"Input arrays path: {arrays_path}", force_screen=True)
     logger.print(f"Output crops path: {crop_path}", force_screen=True)
+    
+    # NEW: Log processing method
+    if use_spatial_indexing:
+        logger.print(f"Using SPATIAL INDEXING with min_crop_distance={min_crop_distance}", 
+                    force_screen=True)
+    else:
+        logger.print("Using ORIGINAL single-annotation processing", force_screen=True)
 
     # Check if required files and directories exist
     if not correspondence_path.exists():
@@ -509,6 +554,11 @@ def main(config_file="config.yaml", base_dir=".", data_split="train"):
         logger.print("No annotations found matching the specified criteria.", force_screen=True)
         logger.close()
         return
+
+    # NEW: Initialize spatial processor if enabled
+    spatial_processor = None
+    if use_spatial_indexing:
+        spatial_processor = SpatialCropProcessor(crop_size, min_crop_distance)
 
     # Get all .npy files in arrays directory
     npy_files = list(arrays_path.glob("*.npy"))
@@ -566,42 +616,87 @@ def main(config_file="config.yaml", base_dir=".", data_split="train"):
             (filtered_annotations["swath_index"] == swath_idx)
         ]
 
-        scene_crop_count = 0
-        scene_padded_count = 0
-        scene_shrunk_count = 0
-        scene_skipped_count = 0
+        if scene_annotations.empty:
+            logger.print(f"  -> No annotations found")
+            continue
+            
+        logger.print(f"  Found {len(scene_annotations)} annotations")
         
-        for _, ann in scene_annotations.iterrows():
-            result = process_crop(ann, img_array, crop_size, out_img_dir, out_lbl_dir, swath_idx, saved_filenames, logger)
-            if result['success']:
-                scene_crop_count += 1
-                total_processed += 1
-                if result['padded']:
-                    scene_padded_count += 1
-                    total_padded += 1
-                if result['shrunk']:
-                    scene_shrunk_count += 1
-                    total_shrunk += 1
-            elif result['skipped']:
-                scene_skipped_count += 1
-                total_skipped += 1
-
-        if scene_crop_count > 0 or scene_skipped_count > 0:
+        # NEW: Choose processing method based on configuration
+        if use_spatial_indexing and spatial_processor is not None:
+            # Use spatial indexing for efficient multi-object crops
+            scene_stats = process_scene_with_spatial_indexing(
+                scene_annotations=scene_annotations,
+                img_array=img_array,
+                crop_size=crop_size,
+                out_img_dir=out_img_dir,
+                out_lbl_dir=out_lbl_dir,
+                swath_idx=swath_idx,
+                saved_filenames=saved_filenames,
+                spatial_processor=spatial_processor,
+                logger=logger,
+                create_padded_crop=create_padded_crop  # Pass our function
+            )
+            
+            # Update summary
             summary.append({
-                "scene_id": scene_id, 
-                "array_file": npy_file.name, 
-                "num_crops": scene_crop_count,
-                "num_padded": scene_padded_count,
-                "num_shrunk": scene_shrunk_count,
-                "num_skipped": scene_skipped_count
+                "scene_id": scene_id,
+                "array_file": npy_file.name,
+                "num_annotations": len(scene_annotations),
+                "num_crops": scene_stats['crops_created'],
+                "num_padded": scene_stats.get('crops_padded', 0),
+                "num_shrunk": 0,  # Not tracked in spatial mode
+                "num_skipped": scene_stats.get('annotations_skipped', 0),
+                "avg_annotations_per_crop": (scene_stats['annotations_processed'] / 
+                                            max(1, scene_stats['crops_created']))
             })
-            status_msg = f"Successfully created {scene_crop_count} crops"
-            if scene_skipped_count > 0:
-                status_msg += f", skipped {scene_skipped_count} crops"
-            logger.print(f"  -> {status_msg}")
+            
+            total_processed += scene_stats['annotations_processed']
+            total_padded += scene_stats.get('crops_padded', 0)
+            total_skipped += scene_stats.get('annotations_skipped', 0)
+            
+            if scene_stats['crops_created'] == 0 and len(scene_annotations) > 0:
+                images_with_no_crops += 1
+            
         else:
-            images_with_no_crops += 1
-            logger.print(f"  -> No crops created (all failed validation)")
+            # Original processing method (one crop per annotation)
+            scene_crop_count = 0
+            scene_padded_count = 0
+            scene_shrunk_count = 0
+            scene_skipped_count = 0
+            
+            for _, ann in scene_annotations.iterrows():
+                result = process_crop(ann, img_array, crop_size, out_img_dir, out_lbl_dir, swath_idx, saved_filenames, logger)
+                if result['success']:
+                    scene_crop_count += 1
+                    total_processed += 1
+                    if result['padded']:
+                        scene_padded_count += 1
+                        total_padded += 1
+                    if result['shrunk']:
+                        scene_shrunk_count += 1
+                        total_shrunk += 1
+                elif result['skipped']:
+                    scene_skipped_count += 1
+                    total_skipped += 1
+
+            if scene_crop_count > 0 or scene_skipped_count > 0:
+                summary.append({
+                    "scene_id": scene_id, 
+                    "array_file": npy_file.name, 
+                    "num_crops": scene_crop_count,
+                    "num_padded": scene_padded_count,
+                    "num_shrunk": scene_shrunk_count,
+                    "num_skipped": scene_skipped_count,
+                    "avg_annotations_per_crop": 1.0  # Always 1 for original method
+                })
+                status_msg = f"Successfully created {scene_crop_count} crops"
+                if scene_skipped_count > 0:
+                    status_msg += f", skipped {scene_skipped_count} crops"
+                logger.print(f"  -> {status_msg}")
+            else:
+                images_with_no_crops += 1
+                logger.print(f"  -> No crops created (all failed validation)")
 
     # Final verification
     actual_image_count = len(list(out_img_dir.glob("*.npy")))
@@ -611,7 +706,26 @@ def main(config_file="config.yaml", base_dir=".", data_split="train"):
     logger.print(f"PROCESSING SUMMARY - {data_split.upper()} SPLIT", force_screen=True)
     logger.print(f"="*60, force_screen=True)
     logger.print(f"Number of input images processed: {len(npy_files)}", force_screen=True)
-    logger.print(f"Total crops of size {crop_size} x {crop_size} created: {total_processed}", force_screen=True)
+    
+    # NEW: Enhanced summary for spatial indexing
+    if use_spatial_indexing:
+        logger.print(f"Method: Spatial Indexing (min_crop_distance={min_crop_distance})", 
+                    force_screen=True)
+        total_crops = sum(s.get('num_crops', 0) for s in summary)
+        avg_ann_per_crop = total_processed / max(1, total_crops) if summary else 0
+        logger.print(f"Total crops created: {total_crops}", force_screen=True)
+        logger.print(f"Total annotations processed: {total_processed}", force_screen=True)
+        logger.print(f"Average annotations per crop: {avg_ann_per_crop:.2f}", force_screen=True)
+        
+        # Calculate reduction percentage
+        total_annotations = len(filtered_annotations)
+        reduction_pct = (1 - total_crops/total_annotations) * 100 if total_annotations > 0 else 0
+        logger.print(f"Crop reduction: {reduction_pct:.1f}% compared to single-annotation method", 
+                    force_screen=True)
+    else:
+        logger.print(f"Method: Original (one crop per annotation)", force_screen=True)
+        logger.print(f"Total crops of size {crop_size} x {crop_size} created: {total_processed}", force_screen=True)
+    
     logger.print(f"Images with no crops created: {images_with_no_crops}", force_screen=True)
     logger.print(f"Crops with padding applied: {total_padded}", force_screen=True)
     logger.print(f"Crops with bounding box shrunk: {total_shrunk}", force_screen=True)
@@ -620,8 +734,16 @@ def main(config_file="config.yaml", base_dir=".", data_split="train"):
     logger.print(f"Actual label files written: {actual_label_count}", force_screen=True)
     logger.print(f"Padding strategy: Zero padding (pad_value=0) for complex64 SAR data", force_screen=True)
      
-    if total_processed != actual_image_count:
-        logger.print(f"MISMATCH: Expected {total_processed} images but found {actual_image_count}", force_screen=True)
+    if use_spatial_indexing:
+        # For spatial indexing, check if total crops match actual files
+        total_crops = sum(s.get('num_crops', 0) for s in summary)
+        if total_crops != actual_image_count:
+            logger.print(f"MISMATCH: Expected {total_crops} images but found {actual_image_count}", force_screen=True)
+    else:
+        # For original method, check if processed count matches actual files
+        if total_processed != actual_image_count:
+            logger.print(f"MISMATCH: Expected {total_processed} images but found {actual_image_count}", force_screen=True)
+    
     if actual_image_count != actual_label_count:
         logger.print(f"MISMATCH: Image count ({actual_image_count}) != Label count ({actual_label_count})", force_screen=True)
 
@@ -631,7 +753,11 @@ def main(config_file="config.yaml", base_dir=".", data_split="train"):
         summary_file = crop_path / f"crop_summary_{data_split}.csv"
         summary_df.to_csv(summary_file, index=False)
         logger.print(f"Crop summary saved to: {summary_file}", force_screen=True)
-        logger.print(f"Total crops processed: {total_processed}", force_screen=True)
+        
+        # NEW: Add average annotations per crop to summary file for spatial indexing
+        if use_spatial_indexing and 'avg_annotations_per_crop' in summary_df.columns:
+            overall_avg = summary_df['avg_annotations_per_crop'].mean()
+            logger.print(f"Overall average annotations per crop: {overall_avg:.2f}", force_screen=True)
     else:
         logger.print("No crops were created.", force_screen=True)
 
@@ -641,7 +767,7 @@ def main(config_file="config.yaml", base_dir=".", data_split="train"):
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description="Create crops from SAR data")
+    parser = argparse.ArgumentParser(description="Create crops from SAR data (v2 with spatial indexing support)")
     parser.add_argument("--config", default="config.yaml", help="Configuration file (default: config.yaml)")
     parser.add_argument("--base-dir", required=True, help="Base directory for input/output paths")
     parser.add_argument("--data-split", choices=['train', 'val', 'test'], required=True, 
@@ -649,3 +775,4 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     main(args.config, args.base_dir, args.data_split)
+
