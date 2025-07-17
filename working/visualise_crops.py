@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-verify_crops.py
+visualise_crops.py
 
 Author: Peter Millitz
 Created: 2025-06-23
