@@ -101,23 +101,6 @@ def load_and_scale_sentinel_1_image(image_filepath: str) -> Tuple[
     return scale_sentinel_1_image(data, nodata_mask, product_type), nodata_mask
 
 class SARFish_Plot(scene.SceneCanvas):
-#    def __init__(
-#            self, data: np.ndarray, nodata_mask: np.ndarray, 
-#            title: str = "SARFish product", show: bool = True, 
-#            keys: str = 'interactive', cmap = 'Greys_r', 
-#            clim: Tuple[int] = None, **kwargs,
-#        ):
-#        scene.SceneCanvas.__init__(
-#            self, title = title, show = show, keys = keys, **kwargs
-#        )
-#        self.unfreeze()
-#        #self.size = (3840, 2160) # 4K vispy does coordinates in x, y order
-#        self.size = (1440, 900)
-#        #self.size = tuple(elem/2 for elem in self.size)
-#        self.view = self.central_widget.add_view()
-#        self.data_shape = data.shape
-#        self.cmap = cmap
-#        self.clim = clim
     def __init__(
             self, data: np.ndarray, nodata_mask: np.ndarray, 
             title: str = "SARFish product", show: bool = True, 
@@ -287,7 +270,6 @@ class SARFish_Plot(scene.SceneCanvas):
             for child in label_object.children:
                 child.parent = None 
 
-
     def on_mouse_wheel(self, event: app.canvas.MouseEvent):
         self.mouse_position_text.pos = self.transform.map([0, self.font_size])[:2]
         if len(self.label_objects) == 0:
@@ -295,32 +277,6 @@ class SARFish_Plot(scene.SceneCanvas):
         
         self.translate_label_categories()
 
-#    def on_mouse_move(self, event: app.canvas.MouseEvent):
-#        self.mouse_pos = self.transform.map(event.pos)[:2]
-#        previous_mouse_pixel_pos = self.mouse_pixel_pos
-#        self.mouse_pixel_pos = np.floor(self.mouse_pos)
-#        if previous_mouse_pixel_pos is None:
-#            return
-#
-#        if (
-#            (previous_mouse_pixel_pos == self.mouse_pixel_pos).all() and
-#            (event.button is None)
-#        ):
-#            return
-#
-#        self.mouse_position_text.pos = self.transform.map([0, self.font_size])[:2]
-#        if (
-#            not (
-#                (0 <= self.mouse_pixel_pos[0] <= self.data_shape[1]) and
-#                (0 <= self.mouse_pixel_pos[1] <= self.data_shape[0])
-#            ) and (self.mouse_position_text is not None)
-#        ):
-#            self.mouse_position_text.text = None
-#            return
-#
-#        self.mouse_position_text.text = (
-#            f'(x, y): {self.mouse_pixel_pos[0], self.mouse_pixel_pos[1]}'
-#        )
     def on_mouse_move(self, event: app.canvas.MouseEvent):
         self.mouse_pos = self.transform.map(event.pos)[:2]
         previous_mouse_pixel_pos = self.mouse_pixel_pos
@@ -360,8 +316,8 @@ class SARFish_Plot(scene.SceneCanvas):
             self.mouse_position_text.text = (
                 f'(x, y): {self.mouse_pixel_pos[0], self.mouse_pixel_pos[1]}, '
                 f'value: {pixel_value:.2f}'
-            )    
-
+            )
+    
     def on_mouse_press(self, event: app.canvas.MouseEvent):
         # https://github.com/vispy/vispy/blob/main/vispy/app/canvas.py#L453
         if len(self.label_objects) == 0:
@@ -449,9 +405,17 @@ class Labels(scene.visuals.Compound):
             assigned_label_index[assignments_under_threshold]
         ).squeeze()
         if assigned_label_index.size == 0:
-            return
+            return None
         
-        return assigned_label_index
+        # Ensure we return a single integer, not an array
+        if isinstance(assigned_label_index, np.ndarray):
+            if assigned_label_index.size == 1:
+                return int(assigned_label_index.item())
+            else:
+                # If multiple labels are close, return the first one
+                return int(assigned_label_index[0])
+        else:
+            return int(assigned_label_index)
 
     def add_categories(self, closest_label_index: int):
         categories = self.categories.iloc[closest_label_index]
@@ -470,3 +434,4 @@ class Labels(scene.visuals.Compound):
         )
         self.category_info.parent = self
         self.freeze()
+
