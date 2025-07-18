@@ -5,17 +5,19 @@
 ```yaml
 # name: SARFish
 channels:
-  - conda-forge
   - pytorch
+  - nvidia
+  - conda-forge
 dependencies:
  - python=3.9
   - jupyterlab
   - pandas
-  - numpy
+  - numpy=1.26.4 for compatibility with ultralytics
   - matplotlib
   - pytorch
   - torchvision
   - torchaudio
+  - pytorch-cuda=12.4 # latest version on Kaya
   - scipy
   - scikit-learn
   - seaborn
@@ -29,7 +31,7 @@ dependencies:
   - pyqt
   - nodejs  # optional: to suppress jupyter error messages 
   - vispy
-  - "libstdcxx-ng<12"  # for strict HPC compatibility
+  - "libstdcxx-ng=12"  # for strict Kaya compatibility
 ```
 
 ## Setup Instructions
