@@ -1,11 +1,11 @@
 """
-sar_yolo_simple_trainer.py (version 3)
+sar_yolo_simple_trainer.py (version 11)
 
 Created: 2025-07-18
 Modified: 
     2025-07-20: Added progressive unfreezing and early stopping
     2025-07-21: Added configurable optimizer (adam, adamw, sgd, rmsprop)
-
+    2025-07-22: Added freeze_up_to_module() function
 
 Simplied, YOLO model agnostic, trainer which bypasses Ultralytics'
 tighlty coupled preprocessing and training modules framework in
@@ -21,9 +21,11 @@ The trainer:
 Permits full control over pre-processing,data loading, loss calculation
 training and data augmentation.
 
-After training with simple trainer, utilise Ultralytics framework for
-inference by loading the trained weights. 
-Proviso: images must be converted to uint8 PNG, JPEG or uint16 TIFF
+Optional:
+=========
+Post-training, Ultralytics framework can be utilised for inference by
+first converting new images to uint8 PNG/JPEG or uint16 TIFF format,
+then loading the trained model's weights as below:
 ======================================================================
 from ultralytics import YOLO
 
@@ -56,14 +58,14 @@ from sar_dataset import SARPreprocessedDataset
 from letterbox_resize import letterbox_resize
 
 class SimpleSARTrainer:
-    """
-        Enhanced trainer with progressive unfreezing and early stopping
-    """
+    """Enhanced trainer with progressive unfreezing and early stopping"""
     
-    def __init__(self, model_name='yolov8n.pt', data_yaml='sar_data.yaml', 
+    def __init__(self, model_name='yolov8n.pt', data_yaml=None, 
                  imgsz=640, device='cuda', save_dir=None):
         
         # Load config
+        if data_yaml is None:
+            raise ValueError("data_yaml must be specified")
         with open(data_yaml, 'r') as f:
             self.data_dict = yaml.safe_load(f)
         
@@ -94,10 +96,11 @@ class SimpleSARTrainer:
         self.model.train()
         
         # Create datasets
-        data_root = Path(self.data_dict['path'])
+        data_root  = Path(self.data_dict['path'])
+        data_train = Path(self.data_dict['train'])
         self.train_dataset = SARPreprocessedDataset(
-            image_dir=str(data_root / 'train' / 'images'),
-            label_dir=str(data_root / 'train' / 'labels'),
+            image_dir=str(data_root / data_train / 'images'),
+            label_dir=str(data_root / data_train / 'labels'),
             imgsz=imgsz
         )
         self.val_dataset = SARPreprocessedDataset(
@@ -124,9 +127,7 @@ class SimpleSARTrainer:
         self.freeze_schedule = None  # Will be set during training
         
     def _create_trainable_model(self, base_model):
-        """
-            Wrap model to ensure it's trainable
-        """
+        """Wrap model to ensure it's trainable"""
         class TrainableWrapper(nn.Module):
             def __init__(self, model):
                 super().__init__()
@@ -142,9 +143,7 @@ class SimpleSARTrainer:
         return TrainableWrapper(base_model)
     
     def _init_loss_fn(self):
-        """
-            Initialize loss function with proper configuration
-        """
+        """Initialize loss function with proper configuration"""
         from types import SimpleNamespace
         
         # Create loss with proper hyperparameters
@@ -153,8 +152,8 @@ class SimpleSARTrainer:
         # Set hyperparameters manually
         loss_fn.hyp = SimpleNamespace(
             box=7.5,
-            cls=1.5,  # Increased to emphasize minority class
-            dfl=1.5,  # try adjusting this (focal loss gamma) to mitigate the class imbalance e.g. 2.0
+            cls=0.5,
+            dfl=1.5,
         )
         
         # Move device-dependent components to device
@@ -168,50 +167,69 @@ class SimpleSARTrainer:
             
         return loss_fn
     
-    def freeze_backbone(self, freeze_layers=20):
-        """
-            Freeze first N layers of the model
-        """
-        param_list = list(self.model.named_parameters())
-        total_params = len(param_list)
+    def freeze_up_to_module(self, last_module):
+        """Freeze all parameters up to and including specified module number"""
+        frozen_count = 0
+        total_count = 0
         
-        for i, (name, param) in enumerate(param_list):
-            if i < freeze_layers:
-                param.requires_grad = False
+        for name, param in self.model.named_parameters():
+            total_count += 1
+            # Handle wrapped model structure
+            if name.startswith('model.'):
+                # For wrapped model: model.model.0.conv.weight
+                parts = name.split('.')
+                if len(parts) > 2 and parts[2].isdigit():
+                    module_num = int(parts[2])
+                    if module_num <= last_module:
+                        param.requires_grad = False
+                        frozen_count += 1
+                    else:
+                        param.requires_grad = True
             else:
-                param.requires_grad = True
+                # For direct model: model.0.conv.weight
+                parts = name.split('.')
+                if len(parts) > 1 and parts[1].isdigit():
+                    module_num = int(parts[1])
+                    if module_num <= last_module:
+                        param.requires_grad = False
+                        frozen_count += 1
+                    else:
+                        param.requires_grad = True
         
-        # Count trainable parameters
+        # Count parameters
         trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-        total_params_count = sum(p.numel() for p in self.model.parameters())
+        total_params = sum(p.numel() for p in self.model.parameters())
+        frozen_params = total_params - trainable_params
         
-        print(f"Frozen {freeze_layers} layers. Trainable params: {trainable_params:,} / {total_params_count:,} "
-              f"({100 * trainable_params / total_params_count:.1f}%)")
+        print(f"Froze modules 0-{last_module}: {frozen_count}/{total_count} tensors")
+        print(f"Frozen params: {frozen_params:,} / {total_params:,} ({100 * frozen_params / total_params:.1f}%)")
+        print(f"Trainable params: {trainable_params:,} ({100 * trainable_params / total_params:.1f}%)")
     
     def setup_progressive_unfreezing(self, epochs):
-        """
-            Setup the progressive unfreezing schedule
-        """
-        # Count total layers
-        total_layers = len(list(self.model.named_parameters()))
+        """Setup the progressive unfreezing schedule based on module numbers"""
+        # YOLOv8 has modules 0-22
+        # 0-9: Backbone
+        # 10-21: Neck
+        # 22: Head
         
         # Define unfreezing schedule
         self.freeze_schedule = {
-            0: int(total_layers * 0.8),    # Start: freeze 80% of layers
-            int(epochs * 0.2): int(total_layers * 0.6),   # At 20%: freeze 60%
-            int(epochs * 0.4): int(total_layers * 0.4),   # At 40%: freeze 40%
-            int(epochs * 0.6): int(total_layers * 0.2),   # At 60%: freeze 20%
-            int(epochs * 0.8): 0,          # At 80%: unfreeze all
+            0: 9,                          # Start: freeze backbone (modules 0-9)
+            int(epochs * 0.2): 12,         # At 20%: unfreeze to module 12
+            int(epochs * 0.4): 15,         # At 40%: unfreeze to module 15
+            int(epochs * 0.6): 18,         # At 60%: unfreeze to module 18
+            int(epochs * 0.8): -1,         # At 80%: unfreeze all (-1 means unfreeze all)
         }
         
-        print(f"Progressive unfreezing schedule (total layers: {total_layers}):")
-        for epoch, freeze_layers in self.freeze_schedule.items():
-            print(f"  Epoch {epoch}: Freeze {freeze_layers} layers")
+        print(f"Progressive unfreezing schedule:")
+        for epoch, last_frozen_module in self.freeze_schedule.items():
+            if last_frozen_module == -1:
+                print(f"  Epoch {epoch}: Unfreeze all modules")
+            else:
+                print(f"  Epoch {epoch}: Freeze modules 0-{last_frozen_module}")
     
     def collate_fn(self, batch):
-        """
-            Collate function for DataLoader
-        """
+        """Collate function for DataLoader"""
         images, labels = zip(*batch)
         images = torch.stack(images, 0)
         
@@ -246,9 +264,7 @@ class SimpleSARTrainer:
         return images, batch_dict
     
     def train_epoch(self, dataloader, optimizer, scheduler=None):
-        """
-            Train for one epoch
-        """
+        """Train for one epoch"""
         self.model.train()
         total_loss = 0
         
@@ -315,9 +331,7 @@ class SimpleSARTrainer:
         return total_loss / len(dataloader)
     
     def validate(self, dataloader):
-        """
-            Validation loop
-        """
+        """Validation loop"""
         self.model.eval()
         total_loss = 0
         
@@ -343,10 +357,8 @@ class SimpleSARTrainer:
     
     def train(self, epochs=50, batch_size=16, lr=0.00001, workers=4, 
           weight_decay=0.0005, use_warmup=True, use_progressive_unfreeze=True,
-          optimizer_type='adamw', **optimizer_kwargs):
-        """
-            Main training loop
-        """
+          optimizer_type='adamw', freeze_until_module=None, **optimizer_kwargs):
+        """Main training loop with enhanced features"""
         
         # Create dataloaders
         train_loader = DataLoader(
@@ -371,7 +383,13 @@ class SimpleSARTrainer:
         if use_progressive_unfreeze:
             self.setup_progressive_unfreezing(epochs)
             # Apply initial freezing
-            self.freeze_backbone(self.freeze_schedule[0])
+            initial_freeze = self.freeze_schedule[0]
+            if initial_freeze >= 0:
+                self.freeze_up_to_module(initial_freeze)
+        elif freeze_until_module is not None:
+            # Static module-based freezing
+            print(f"\n🔒 Static freezing: modules 0-{freeze_until_module}")
+            self.freeze_up_to_module(freeze_until_module)
         
         # Create optimizer based on type
         if optimizer_type.lower() == 'adam':
@@ -405,9 +423,7 @@ class SimpleSARTrainer:
             )
         else:
             raise ValueError(f"Unknown optimizer: {optimizer_type}")
-
-        print(f"Using {optimizer_type.upper()} optimizer")        
-
+        
         # Scheduler setup
         if use_warmup:
             scheduler = torch.optim.lr_scheduler.OneCycleLR(
@@ -441,8 +457,16 @@ class SimpleSARTrainer:
             
             # Check if we need to unfreeze more layers
             if use_progressive_unfreeze and epoch in self.freeze_schedule:
-                print(f"\n🔓 Progressive unfreezing at epoch {epoch+1}")
-                self.freeze_backbone(self.freeze_schedule[epoch])
+                freeze_until = self.freeze_schedule[epoch]
+                if freeze_until == -1:
+                    print(f"\n🔓 Progressive unfreezing at epoch {epoch+1}: Unfreezing all modules")
+                    # Unfreeze all by setting all parameters to require gradients
+                    for param in self.model.parameters():
+                        param.requires_grad = True
+                    print("All parameters are now trainable")
+                else:
+                    print(f"\n🔓 Progressive unfreezing at epoch {epoch+1}")
+                    self.freeze_up_to_module(freeze_until)
             
             # Train
             if use_warmup:
@@ -510,9 +534,7 @@ class SimpleSARTrainer:
         return history
     
     def plot_history(self, history):
-        """
-            Plot training history
-        """
+        """Plot training history"""
         clear_output(wait=True)
         plt.figure(figsize=(15, 5))
         
@@ -538,7 +560,7 @@ class SimpleSARTrainer:
         # Loss ratio plot (to detect overfitting)
         plt.subplot(1, 3, 3)
         if len(history['train_loss']) > 0:
-            loss_ratio = [v/t for t, v in zip(history['train_loss'], history['val_loss'])]
+            loss_ratio = [v/(t+1e-8) for t, v in zip(history['train_loss'], history['val_loss'])]
             plt.plot(loss_ratio, 'r-', linewidth=2)
             plt.axhline(y=1.0, color='k', linestyle='--', alpha=0.5)
             plt.xlabel('Epoch')
@@ -550,9 +572,7 @@ class SimpleSARTrainer:
         plt.show()
     
     def save_checkpoint(self, epoch, optimizer, final=False, best=False):
-        """
-            Save model checkpoint
-        """
+        """Save model checkpoint"""
         if best:
             filename = 'best.pt'
         elif final:
@@ -568,12 +588,10 @@ class SimpleSARTrainer:
             'patience_counter': self.patience_counter,
         }
         torch.save(checkpoint, self.save_dir / filename)
-        print(f"  Saved checkpoint: {filename}")
+        print(f"Saved checkpoint: {filename}")
     
     def load_best_model(self):
-        """
-            Load the best model checkpoint
-        """
+        """Load the best model checkpoint"""
         checkpoint_path = self.save_dir / 'best.pt'
         if checkpoint_path.exists():
             checkpoint = torch.load(checkpoint_path)
@@ -583,25 +601,39 @@ class SimpleSARTrainer:
         else:
             print("No best model found!")
             return None, None
-
-
-# Usage example with enhanced features
-if __name__ == "__main__":
-    # Initialize trainer
-    trainer = SimpleSARTrainer(
-        model_name='yolov8n.pt',
-        data_yaml='sar_data.yaml',
-        imgsz=640,
-        device='cuda'
-    )
     
-    # Train with enhanced features
-    history = trainer.train(
-        epochs=50,
-        batch_size=16,
-        lr=0.00001,  # Very low initial learning rate
-        workers=4,
-        weight_decay=0.0005,  # L2 regularization
-        use_warmup=True,  # Enable learning rate warmup
-        use_progressive_unfreeze=True  # Enable progressive unfreezing
-    )
+    def save_training_history(self, history, config_dict=None):
+        """Save training history and configuration"""
+        import json
+        
+        # Save history
+        with open(self.save_dir / 'history.json', 'w') as f:
+            json.dump(history, f)
+        
+        # Save config if provided
+        if config_dict is not None:
+            with open(self.save_dir / 'config.json', 'w') as f:
+                json.dump(config_dict, f, indent=2)
+        
+        print(f"Saved training history to: {self.save_dir}")
+        
+    def load_training_history(self):
+        """Load training history from saved file"""
+        import json
+        
+        history_path = self.save_dir / 'history.json'
+        config_path = self.save_dir / 'config.json'
+        
+        history = None
+        config = None
+        
+        if history_path.exists():
+            with open(history_path, 'r') as f:
+                history = json.load(f)
+                
+        if config_path.exists():
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                
+        return history, config
+
