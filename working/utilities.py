@@ -136,11 +136,11 @@ def extract_list_from_command(command, output_file=None, print_summary=False, co
 
     return lines
 
-import numpy as np
-import cv2
-import shutil
-from pathlib import Path
-from tqdm import tqdm
+#import numpy as np
+#import cv2
+#import shutil
+#from pathlib import Path
+#from tqdm import tqdm
 
 def convert_sar_dataset_to_png(images_input_path, images_output_path, labels_input_path, labels_output_path):
     """
@@ -194,7 +194,7 @@ def convert_sar_dataset_to_png(images_input_path, images_output_path, labels_inp
             
             if success:
                 # Copy corresponding label
-                label_file = labels_input_path / f"{npy_file.stem}.txt"
+                label_file = labels_input_path / f"{npy_file.stem[:-5]}.txt"
                 if label_file.exists():
                     new_label_file = labels_output_path / f"{npy_file.stem}.txt"
                     shutil.copy(label_file, new_label_file)
@@ -210,4 +210,3 @@ def convert_sar_dataset_to_png(images_input_path, images_output_path, labels_inp
                 print(f"Error with {npy_file.name}: {e}")
     
     print(f"Conversion complete: {converted} successful, {failed} failed")
-
