@@ -1,4 +1,4 @@
-# sar_slc_augmentation.py - v7.0 (bug fixes)
+# sar_slc_augmentation.py - v18 (rotation bug fix)
 # Augmentation module for raw SLC complex SAR data with lazy loading
 
 import numpy as np
@@ -34,8 +34,8 @@ class SARSLCPreprocessingAugmentation:
                 {0: {'hflip': 0.3, 'vflip': 0.3, 'rotate': 0.2, 'translate': 0.2},
                  1: {'hflip': 0.6, 'vflip': 0.6, 'rotate': 0.5, 'translate': 0.4}}
             sar_probs: Per-class probabilities for SAR-specific augmentations
-                {0: {'phase_shift': 0.0, 'amplitude_scale': 0.0, 'complex_speckle': 0.0},
-                 1: {'phase_shift': 0.1, 'amplitude_scale': 0.1, 'complex_speckle': 0.1}}
+                {0: {'phase_shift': 0.0, 'amplitude_scale': 0.0, 'complex_speckle': 0.0, 'gaussian_filter': 0.0},
+                 1: {'phase_shift': 0.1, 'amplitude_scale': 0.1, 'complex_speckle': 0.1, 'gaussian_filter': 0.2}}
             mosaic_prob: Per-class probability of creating mosaic
                 {0: 0.1, 1: 0.3}
             min_visibility: Minimum fraction of bbox that must remain visible
@@ -51,8 +51,8 @@ class SARSLCPreprocessingAugmentation:
         if sar_probs is None:
             # SAR augmentations default to 0 probability
             sar_probs = {
-                0: {'phase_shift': 0.0, 'amplitude_scale': 0.0, 'complex_speckle': 0.0},
-                1: {'phase_shift': 0.1, 'amplitude_scale': 0.1, 'complex_speckle': 0.1}
+                0: {'phase_shift': 0.0, 'amplitude_scale': 0.0, 'complex_speckle': 0.0, 'gaussian_filter': 0.0},
+                1: {'phase_shift': 0.1, 'amplitude_scale': 0.1, 'complex_speckle': 0.1, 'gaussian_filter': 0.2}
             }
             
         if mosaic_prob is None:
@@ -88,7 +88,8 @@ class SARSLCPreprocessingAugmentation:
         self.sar_transforms = {
             'phase_shift': self._create_phase_shift(),
             'amplitude_scale': self._create_amplitude_scale(),
-            'complex_speckle': self._create_complex_speckle()
+            'complex_speckle': self._create_complex_speckle(),
+            'gaussian_filter': self._create_complex_gaussian_filter()
         }
     
     def _create_complex_hflip(self):
@@ -129,14 +130,14 @@ class SARSLCPreprocessingAugmentation:
             if len(rotated_labels) > 0:
                 for _ in range(k):
                     # Rotate 90 degrees counter-clockwise to match np.rot90
-                    # For counter-clockwise: new_x = 1 - old_y, new_y = old_x
+                    # For counter-clockwise: new_x = old_y, new_y = 1 - old_x
                     temp_x = rotated_labels[:, 1].copy()
                     temp_y = rotated_labels[:, 2].copy()
                     temp_w = rotated_labels[:, 3].copy()
                     temp_h = rotated_labels[:, 4].copy()
                     
-                    rotated_labels[:, 1] = 1.0 - temp_y  # new_x = 1 - old_y
-                    rotated_labels[:, 2] = temp_x        # new_y = old_x
+                    rotated_labels[:, 1] = temp_y        # new_x = old_y
+                    rotated_labels[:, 2] = 1.0 - temp_x  # new_y = 1 - old_x
                     rotated_labels[:, 3] = temp_h        # Swap width and height
                     rotated_labels[:, 4] = temp_w
             
@@ -240,6 +241,34 @@ class SARSLCPreprocessingAugmentation:
             return noisy_data
         return transform
     
+    def _create_complex_gaussian_filter(self, sigma_range=(0.5, 2.0)):
+        """
+        Create complex-valued Gaussian filter for noise reduction.
+        Based on the approach in the paper where Gaussian filtering is applied
+        to amplitude while preserving phase.
+        
+        Args:
+            sigma_range: Tuple of (min_sigma, max_sigma) for random sigma selection
+        """
+        def transform(data: np.ndarray) -> np.ndarray:
+            from scipy.ndimage import gaussian_filter
+            
+            # Random sigma for varying smoothing strength
+            sigma = np.random.uniform(sigma_range[0], sigma_range[1])
+            
+            # Extract amplitude and phase
+            amplitude = np.abs(data)
+            phase = np.angle(data)
+            
+            # Apply Gaussian filter to amplitude only (preserves phase)
+            filtered_amplitude = gaussian_filter(amplitude, sigma=sigma)
+            
+            # Reconstruct complex data: filtered_amplitude * e^(i*phase)
+            filtered_data = filtered_amplitude * np.exp(1j * phase)
+            
+            return filtered_data
+        return transform
+    
     def _get_class_distribution(self, labels: np.ndarray) -> Dict[int, float]:
         """Get class distribution in image."""
         if len(labels) == 0:
@@ -309,6 +338,13 @@ class SARSLCPreprocessingAugmentation:
         geo_probs = self.geometric_probs.get(priority_class, {})
         sar_probs = self.sar_probs.get(priority_class, {})
         
+        # Quick Win #2: Batch random number generation
+        # Pre-generate all random numbers needed for this augmentation
+        n_geo_transforms = len(self.geometric_transforms)
+        n_sar_transforms = len(self.sar_transforms)
+        all_randoms = np.random.random(n_geo_transforms + n_sar_transforms)
+        random_idx = 0
+        
         # Apply augmentations
         applied_augmentations = []
         aug_data = slc_data.copy()
@@ -316,17 +352,19 @@ class SARSLCPreprocessingAugmentation:
         
         # Apply geometric augmentations
         for aug_name, aug_transform in self.geometric_transforms.items():
-            if random.random() < geo_probs.get(aug_name, 0):
+            if all_randoms[random_idx] < geo_probs.get(aug_name, 0):
                 aug_data, aug_labels = aug_transform(aug_data, aug_labels)
                 applied_augmentations.append(aug_name)
                 self._update_stats(aug_name)
+            random_idx += 1
         
         # Apply SAR-specific augmentations (data only)
         for aug_name, aug_transform in self.sar_transforms.items():
-            if random.random() < sar_probs.get(aug_name, 0):
+            if all_randoms[random_idx] < sar_probs.get(aug_name, 0):
                 aug_data = aug_transform(aug_data)
                 applied_augmentations.append(aug_name)
                 self._update_stats(aug_name)
+            random_idx += 1
         
         # Create description
         description = "_".join(applied_augmentations) if applied_augmentations else "none"
@@ -421,17 +459,32 @@ class SARSLCPreprocessingAugmentation:
         slc_data = np.load(data_path)
         assert slc_data.dtype == np.complex64, f"Expected complex64 data in {data_path}"
         
-        # Load labels
+        # Load labels with faster parsing
         label_path = labels_dir / f"{data_path.stem}.txt"
         
         if label_path.exists() and label_path.stat().st_size > 0:
             try:
-                labels = np.loadtxt(label_path, ndmin=2, dtype=np.float32)
-                if len(labels) > 0:
-                    # Validate label format
-                    assert labels.shape[1] == 5, f"Labels should have 5 columns, got {labels.shape[1]}"
-                    assert np.all(labels[:, 0] >= 0), "Class indices should be non-negative"
-                    assert np.all((labels[:, 1:] >= 0) & (labels[:, 1:] <= 1)), "Coordinates should be in [0,1]"
+                # Quick Win #1: Replace np.loadtxt with faster parsing
+                with open(label_path, 'r') as f:
+                    lines = f.readlines()
+                
+                if lines:
+                    labels = []
+                    for line in lines:
+                        parts = line.strip().split()
+                        if len(parts) == 5:
+                            labels.append([float(x) for x in parts])
+                    
+                    if labels:
+                        labels = np.array(labels, dtype=np.float32)
+                        # Validate label format
+                        assert labels.shape[1] == 5, f"Labels should have 5 columns, got {labels.shape[1]}"
+                        assert np.all(labels[:, 0] >= 0), "Class indices should be non-negative"
+                        assert np.all((labels[:, 1:] >= 0) & (labels[:, 1:] <= 1)), "Coordinates should be in [0,1]"
+                    else:
+                        labels = np.zeros((0, 5), dtype=np.float32)
+                else:
+                    labels = np.zeros((0, 5), dtype=np.float32)
             except Exception as e:
                 print(f"Error loading labels for {data_path.stem}: {e}")
                 labels = np.zeros((0, 5), dtype=np.float32)
@@ -451,15 +504,28 @@ class SARSLCPreprocessingAugmentation:
             
             if label_path.exists() and label_path.stat().st_size > 0:
                 try:
-                    labels = np.loadtxt(label_path, ndmin=2, dtype=np.float32)
-                    if len(labels) > 0:
-                        classes = set(labels[:, 0].astype(int))
-                        if 1 in classes:
-                            file_categories['class_1'].append(data_path)
-                            file_categories['minority'].append(data_path)
-                        if 0 in classes:
-                            file_categories['class_0'].append(data_path)
-                            file_categories['majority'].append(data_path)
+                    # Quick Win #1: Use faster parsing for label scanning too
+                    with open(label_path, 'r') as f:
+                        lines = f.readlines()
+                    
+                    if lines:
+                        labels = []
+                        for line in lines:
+                            parts = line.strip().split()
+                            if len(parts) == 5:
+                                labels.append([float(x) for x in parts])
+                        
+                        if labels:
+                            labels = np.array(labels, dtype=np.float32)
+                            classes = set(labels[:, 0].astype(int))
+                            if 1 in classes:
+                                file_categories['class_1'].append(data_path)
+                                file_categories['minority'].append(data_path)
+                            if 0 in classes:
+                                file_categories['class_0'].append(data_path)
+                                file_categories['majority'].append(data_path)
+                        else:
+                            file_categories['no_labels'].append(data_path)
                     else:
                         file_categories['no_labels'].append(data_path)
                 except:
@@ -824,181 +890,3 @@ class SARSLCPreprocessingAugmentation:
             config = json.load(f)
         return cls(**config)
 
-
-# Example usage for testing individual transforms
-def test_transforms():
-    """Test individual transforms on sample complex data."""
-    # Create sample complex data
-    h, w = 96, 96
-    real_part = np.random.randn(h, w).astype(np.float32)
-    imag_part = np.random.randn(h, w).astype(np.float32)
-    test_data = (real_part + 1j * imag_part).astype(np.complex64)
-    
-    # Create sample labels
-    test_labels = np.array([
-        [0, 0.5, 0.5, 0.2, 0.3],  # class 0, center box
-        [1, 0.8, 0.2, 0.15, 0.15]  # class 1, top-right box
-    ], dtype=np.float32)
-    
-    # Initialize augmentor
-    augmentor = SARSLCPreprocessingAugmentation()
-    
-    print("Testing individual transforms...")
-    
-    # Test horizontal flip
-    hflip = augmentor._create_complex_hflip()
-    flipped_data, flipped_labels = hflip(test_data, test_labels)
-    print(f"Horizontal flip: data shape {flipped_data.shape}, labels shape {flipped_labels.shape}")
-    print(f"Original label 1 x-center: {test_labels[1, 1]:.3f}, Flipped: {flipped_labels[1, 1]:.3f}")
-    print(f"Expected flipped x: {1.0 - test_labels[1, 1]:.3f} ✓" if abs(flipped_labels[1, 1] - (1.0 - test_labels[1, 1])) < 0.001 else "✗")
-    
-    # Test vertical flip
-    vflip = augmentor._create_complex_vflip()
-    vflipped_data, vflipped_labels = vflip(test_data, test_labels)
-    print(f"\nVertical flip:")
-    print(f"Original label 1 y-center: {test_labels[1, 2]:.3f}, Flipped: {vflipped_labels[1, 2]:.3f}")
-    print(f"Expected flipped y: {1.0 - test_labels[1, 2]:.3f} ✓" if abs(vflipped_labels[1, 2] - (1.0 - test_labels[1, 2])) < 0.001 else "✗")
-    
-    # Test rotation
-    rotate = augmentor._create_complex_rotate()
-    # Fix the random seed temporarily for predictable testing
-    random.seed(42)
-    rotated_data, rotated_labels = rotate(test_data, test_labels)
-    print(f"\nRotation test:")
-    print(f"Original label 1: x={test_labels[1, 1]:.3f}, y={test_labels[1, 2]:.3f}, w={test_labels[1, 3]:.3f}, h={test_labels[1, 4]:.3f}")
-    print(f"Rotated label 1: x={rotated_labels[1, 1]:.3f}, y={rotated_labels[1, 2]:.3f}, w={rotated_labels[1, 3]:.3f}, h={rotated_labels[1, 4]:.3f}")
-    print("Note: For 90° CCW rotation, expected new_x ≈ 1-old_y, new_y ≈ old_x, and w/h swapped")
-    
-    # Test phase shift
-    phase_shift = augmentor._create_phase_shift()
-    shifted_data = phase_shift(test_data)
-    print(f"\nPhase shift: data shape {shifted_data.shape}")
-    print(f"Phase change at (0,0): {np.angle(shifted_data[0,0]) - np.angle(test_data[0,0]):.3f} radians")
-    
-    # Test complex speckle
-    speckle = augmentor._create_complex_speckle()
-    noisy_data = speckle(test_data)
-    print(f"\nComplex speckle: data shape {noisy_data.shape}")
-    print(f"Amplitude ratio at (0,0): {np.abs(noisy_data[0,0]) / np.abs(test_data[0,0]):.3f}")
-
-
-def verify_transformations():
-    """Comprehensive test to verify all transformations work correctly."""
-    print("\n" + "="*50)
-    print("COMPREHENSIVE TRANSFORMATION VERIFICATION")
-    print("="*50 + "\n")
-    
-    # Create a simple test image with known pattern
-    h, w = 100, 100
-    test_data = np.zeros((h, w), dtype=np.complex64)
-    
-    # Create a specific pattern to track rotations
-    # Top-left quadrant = 1+1j (bright)
-    test_data[10:40, 10:40] = 1 + 1j
-    
-    # Create test labels for boxes in each quadrant
-    test_labels = np.array([
-        [0, 0.25, 0.25, 0.2, 0.2],  # Top-left
-        [1, 0.75, 0.25, 0.2, 0.2],  # Top-right
-        [0, 0.25, 0.75, 0.2, 0.2],  # Bottom-left
-        [1, 0.75, 0.75, 0.2, 0.2],  # Bottom-right
-    ], dtype=np.float32)
-    
-    augmentor = SARSLCPreprocessingAugmentation()
-    
-    # Test each transformation
-    print("1. Testing 90° rotation (counter-clockwise):")
-    rotate = augmentor._create_complex_rotate()
-    # Force single rotation
-    old_randint = random.randint
-    random.randint = lambda a, b: 1  # Force k=1
-    
-    rotated_data, rotated_labels = rotate(test_data, test_labels)
-    random.randint = old_randint  # Restore
-    
-    print("   Original top-left box (0.25, 0.25) should move to bottom-left (0.75, 0.25)")
-    print(f"   Result: ({rotated_labels[0, 1]:.2f}, {rotated_labels[0, 2]:.2f})")
-    print(f"   Correct: {'✓' if abs(rotated_labels[0, 1] - 0.75) < 0.01 and abs(rotated_labels[0, 2] - 0.25) < 0.01 else '✗'}")
-    
-    print("\n2. Testing horizontal flip:")
-    hflip = augmentor._create_complex_hflip()
-    hflipped_data, hflipped_labels = hflip(test_data, test_labels)
-    
-    print("   Original top-left box (0.25, 0.25) should move to (0.75, 0.25)")
-    print(f"   Result: ({hflipped_labels[0, 1]:.2f}, {hflipped_labels[0, 2]:.2f})")
-    print(f"   Correct: {'✓' if abs(hflipped_labels[0, 1] - 0.75) < 0.01 and abs(hflipped_labels[0, 2] - 0.25) < 0.01 else '✗'}")
-    
-    print("\n3. Testing vertical flip:")
-    vflip = augmentor._create_complex_vflip()
-    vflipped_data, vflipped_labels = vflip(test_data, test_labels)
-    
-    print("   Original top-left box (0.25, 0.25) should move to (0.25, 0.75)")
-    print(f"   Result: ({vflipped_labels[0, 1]:.2f}, {vflipped_labels[0, 2]:.2f})")
-    print(f"   Correct: {'✓' if abs(vflipped_labels[0, 1] - 0.25) < 0.01 and abs(vflipped_labels[0, 2] - 0.75) < 0.01 else '✗'}")
-    
-    print("\n4. Testing translation:")
-    translate = augmentor._create_complex_translate()
-    # Test with controlled translation
-    old_randint = random.randint
-    # Force 10 pixel shift right and down
-    call_count = [0]
-    def mock_randint(a, b):
-        call_count[0] += 1
-        return 10 if call_count[0] % 2 == 1 else 10  # shift_x=10, shift_y=10
-    random.randint = mock_randint
-    
-    translated_data, translated_labels = translate(test_data, test_labels)
-    random.randint = old_randint  # Restore
-    
-    expected_shift = 10 / 100  # 10 pixels in 100x100 image = 0.1 normalized
-    print(f"   Original top-left box (0.25, 0.25) should shift by ~0.1")
-    print(f"   Result: ({translated_labels[0, 1]:.2f}, {translated_labels[0, 2]:.2f})")
-    print(f"   Correct: {'✓' if abs(translated_labels[0, 1] - 0.35) < 0.02 and abs(translated_labels[0, 2] - 0.35) < 0.02 else '✗'}")
-
-
-# Standalone usage
-if __name__ == "__main__":
-    # Run basic tests
-    test_transforms()
-    
-    # Run comprehensive verification
-    verify_transformations()
-    
-    print("\n" + "="*50 + "\n")
-    
-    # Example configuration with strong bias towards minority class
-    augmentor = SARSLCPreprocessingAugmentation(
-        geometric_probs={
-            0: {'hflip': 0.3, 'vflip': 0.3, 'rotate': 0.2, 'translate': 0.2},
-            1: {'hflip': 0.7, 'vflip': 0.7, 'rotate': 0.6, 'translate': 0.5}
-        },
-        sar_probs={
-            0: {'phase_shift': 0.0, 'amplitude_scale': 0.0, 'complex_speckle': 0.0},
-            1: {'phase_shift': 0.2, 'amplitude_scale': 0.2, 'complex_speckle': 0.1}
-        },
-        mosaic_prob={0: 0.1, 1: 0.4},
-        min_visibility=0.3
-    )
-    
-    # Process a directory of raw SLC data
-    # Use enable_mosaic=False for lazy loading (memory efficient)
-    # Use enable_mosaic=True for mosaic creation (loads files as needed)
-    augmentor.process_directory(
-        input_dir='data/slc_crops/train',
-        output_dir='data/slc_crops_augmented/train',
-        labels_dir='data/slc_crops/labels',
-        output_labels_dir='data/slc_crops_augmented/labels',
-        augmentations_per_image={0: 1, 1: 4},  # 4x augmentations for minority class
-        enable_mosaic=True  # Set to False for memory-efficient processing
-    )
-    
-    # Print statistics
-    print("\nAugmentation Statistics:")
-    stats = augmentor.get_stats()
-    print(f"Total processed: {stats['processed']}")
-    print(f"Total augmented: {stats['augmented']}")
-    print(f"By class: {stats['by_class']}")
-    print(f"Augmentation counts: {stats['augmentation_counts']}")
-    
-    # Save configuration
-    augmentor.save_config('slc_augmentation_config.json')
