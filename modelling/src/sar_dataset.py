@@ -33,13 +33,6 @@ class SARPreprocessedDataset(Dataset):
         else:
             labels = np.zeros((0, 5), dtype=np.float32)
 
-        # Un-normalize labels BEFORE re-sizing
-        h0, w0 = im.shape[:2]
-        labels[:, 1] *= w0
-        labels[:, 2] *= h0
-        labels[:, 3] *= w0
-        labels[:, 4] *= h0
-        
         # Apply letterbox resize
         im, labels = letterbox_resize(im, labels, new_shape=self.imgsz)
 
