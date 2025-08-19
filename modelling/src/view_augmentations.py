@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 
-# Version 24 (<=> v35) stable version for augmented processed images
+# Version 25 - Reverted to original intent: unprocessed augmented images only
 # (Note: Formerly named 'view_scaled_magnitude.py')
 
 """
 view_augmentations.py
 
-A visualization tool for inspecting augmented SAR SLC (3, H, W)-shaped image crops.
-Only the first channel (scaled + normalized dB magnitude) is displayed in grayscale.
+A visualization tool for inspecting augmented SAR SLC image crops.
+Supports only numpy arrays with shape (H, W) and dtype=complex64 for unprocessed augmented data.
+The magnitude is computed and displayed in grayscale.
 
 Expected directory structure:
-- images/: contains .npy files with shape (3, H, W)
-- labels/: contains YOLO-format .txt files with same stem, excluding '_proc' string.
+- images/: contains .npy files with shape (H, W) and dtype=complex64
+- labels/: contains YOLO-format .txt files with same stem (no '_proc' suffix).
 
 Displays up to 5 randomly selected image-label pairs in two rows (max 5 per row).
-Each original-augmented image pair is aligned vertically.Handles multiple bounding
+Each original-augmented image pair is aligned vertically. Handles multiple bounding
 boxes per image and supports clipping using raw dB values.
 
 Supports mosaic image visualization (up to 10 examples) when select_mosaics=True.
@@ -31,25 +32,56 @@ from pathlib import Path
 import os
 import random
 import re
-import textwrap
 
 _label_cache = {}
 
+def load_image_data(img_path):
+    """Load image data from .npy file and return magnitude
+    
+    Args:
+        img_path: Path to .npy image file
+        
+    Returns:
+        numpy.ndarray: Magnitude from complex64 array with shape (H, W)
+    """
+    img_path = Path(img_path)
+    
+    if img_path.suffix.lower() != '.npy':
+        raise ValueError(f"Unsupported file format: {img_path.suffix}. Only .npy files are supported.")
+    
+    # Load numpy array with shape (H, W) and dtype=complex64
+    img_data = np.load(img_path)
+    if img_data.ndim != 2:
+        raise ValueError(f"Invalid numpy shape: {img_data.shape}, expected (H, W)")
+    if not np.iscomplexobj(img_data):
+        raise ValueError(f"Invalid numpy dtype: {img_data.dtype}, expected complex64")
+    
+    # Return magnitude
+    return np.abs(img_data)
+
 def find_matching_label(image_filename, label_filenames):
-    candidate = image_filename.replace('_proc.npy', '.txt')
+    """Find matching label file for image (no '_proc' suffix for unprocessed data)"""
+    if image_filename.endswith('.npy'):
+        candidate = image_filename.replace('.npy', '.txt')
+    else:
+        # Fallback for other naming patterns
+        candidate = image_filename.rsplit('.', 1)[0] + '.txt'
+    
     return candidate if candidate in label_filenames else None
 
 def find_matching_mosaic_label(image_filename, label_filenames):
     """Find matching label file for mosaic images"""
-    # Extract X from mosaic_minority_X.npy
-    match = re.match(r'mosaic_minority_(\d+)_proc\.npy$', image_filename)
+    # Extract X from mosaic_minority_X.npy or mosaic_majority_X.npy
+    match = re.match(r'mosaic_(minority|majority)_(\d+)\.npy$', image_filename)
     if match:
-        x = match.group(1)
-        candidate = f'mosaic_minority_{x}.txt'
+        mosaic_type = match.group(1)
+        x = match.group(2)
+        candidate = f'mosaic_{mosaic_type}_{x}.txt'
         return candidate if candidate in label_filenames else None
     return None
 
 def load_all_bounding_boxes(label_path, img_height, img_width):
+    """Load all bounding boxes from YOLO format label file"""
     boxes = []
     try:
         with open(label_path, 'r') as f:
@@ -72,11 +104,6 @@ def load_all_bounding_boxes(label_path, img_height, img_width):
         pass
     return boxes
 
-def db_to_normalized(db_value, db_min=0.00, db_max=37.09):
-    return (db_value - db_min) / (db_max - db_min)
-
-def normalized_to_db(norm_value, db_min=0.00, db_max=37.09):
-    return norm_value * (db_max - db_min) + db_min
 
 def preload_label_cache(lbl_dir, all_lbls):
     """Pre-load all label files into cache for fast class filtering"""
@@ -154,19 +181,39 @@ def setup_figure_and_grid(num_cols, num_rows, title):
     fig.suptitle(title, fontsize=18, y=0.90)
     return fig, gs
 
-def plot_image_with_boxes(ax, img_path, label_path, display_min, display_max):
+def plot_image_with_boxes(ax, img_path, label_path, amp_clip_min, amp_clip_max):
     """Plot single image with bounding boxes"""
-    img_data = np.load(img_path)
-    if img_data.ndim != 3 or img_data.shape[0] != 3:
-        print(f"Skipping invalid image shape: {img_path}")
+    try:
+        mag = load_image_data(img_path)  # Raw amplitude/magnitude values
+    except (ValueError, IOError) as e:
+        print(f"Skipping invalid image: {img_path} - {e}")
         return False
     
-    # Apply clipping if specified
-    mag = img_data[0]
-    if display_min is not None or display_max is not None:
-        mag = np.clip(mag, display_min or 0.0, display_max or 1.0)
+    # Default clipping values (1% and 99% percentiles of train dataset)
+    default_amp_min = 1.00
+    default_amp_max = 71.51
     
-    ax.imshow(mag, cmap='gray', vmin=display_min or 0.0, vmax=display_max or 1.0, aspect='equal')
+    # Use provided clipping values or defaults
+    clip_min = amp_clip_min if amp_clip_min is not None else default_amp_min
+    clip_max = amp_clip_max if amp_clip_max is not None else default_amp_max
+    
+    # Step 1: Clip raw amplitudes
+    mag_clipped = np.clip(mag, clip_min, clip_max)
+    
+    # Step 2: Convert clipped amplitudes to dB
+    mag_db = 20 * np.log10(mag_clipped + 1e-10)  # Add epsilon to avoid log(0)
+    
+    # Step 3: Normalize dB values to [0,1] for display
+    db_min = 20 * np.log10(clip_min + 1e-10)
+    db_max = 20 * np.log10(clip_max + 1e-10)
+    
+    if db_max > db_min:
+        display_data = (mag_db - db_min) / (db_max - db_min)
+    else:
+        display_data = np.zeros_like(mag_db)
+    
+    # Step 4: Display with fixed [0,1] range
+    ax.imshow(display_data, cmap='gray', vmin=0.0, vmax=1.0, aspect='equal')
     
     # Add bounding boxes
     bboxes = load_all_bounding_boxes(label_path, *mag.shape)
@@ -184,9 +231,20 @@ def plot_image_with_boxes(ax, img_path, label_path, display_min, display_max):
     ax.set_yticks([])
     return True
 
-def add_colorbars_to_rows(fig, row_axes, display_min, display_max, data_db_min, data_db_max):
+def add_colorbars_to_rows(fig, row_axes, amp_clip_min, amp_clip_max):
     """Add colorbars for each row that has images"""
-    norm = Normalize(vmin=display_min, vmax=display_max)
+    # Use default clipping values if not provided
+    default_amp_min = 1.00
+    default_amp_max = 71.51
+    
+    clip_min = amp_clip_min if amp_clip_min is not None else default_amp_min
+    clip_max = amp_clip_max if amp_clip_max is not None else default_amp_max
+    
+    # Convert amplitude clipping bounds to dB for colorbar labels
+    db_min = 20 * np.log10(clip_min + 1e-10)
+    db_max = 20 * np.log10(clip_max + 1e-10)
+    
+    norm = Normalize(vmin=0.0, vmax=1.0)  # Display data is normalized to [0,1]
     
     for row, axes in enumerate(row_axes):
         if axes:
@@ -198,17 +256,16 @@ def add_colorbars_to_rows(fig, row_axes, display_min, display_max, data_db_min, 
             cb = ColorbarBase(cbar_ax, cmap=cm.gray, norm=norm, orientation='vertical')
             cb.set_label("dB Magnitude", fontsize=10)
             
-            # Set endpoint ticks in dB
-            tick_vals = [display_min, display_max]
-            tick_labels = [f"{normalized_to_db(display_min, data_db_min, data_db_max):.2f}", 
-                          f"{normalized_to_db(display_max, data_db_min, data_db_max):.2f}"]
+            # Set endpoint ticks in dB showing the actual clipping range
+            tick_vals = [0.0, 1.0]
+            tick_labels = [f"{db_min:.1f}", f"{db_max:.1f}"]
             cb.set_ticks(tick_vals)
             cb.set_ticklabels(tick_labels)
             cb.ax.tick_params(labelsize=8)
 
 def get_valid_mosaic_pairs(all_imgs, all_lbls, lbl_dir, class_filter):
     """Get valid mosaic image-label pairs"""
-    mosaic_imgs = [img for img in all_imgs if re.match(r'mosaic_minority_\d+_proc\.npy$', img)]
+    mosaic_imgs = [img for img in all_imgs if re.match(r'mosaic_(minority|majority)_\d+\.npy$', img)]
     
     if not mosaic_imgs:
         return []
@@ -227,7 +284,8 @@ def get_valid_augmented_pairs(all_imgs, all_lbls, lbl_dir, class_filter):
     """Get valid original-augmented image pairs"""
     pairs = {}
     for img in all_imgs:
-        match = re.match(r'(.+_swath\d+)_(original|aug\d+_\w+)_proc\.npy$', img)
+        # Match pattern for unprocessed augmented files (no '_proc' suffix)
+        match = re.match(r'(.+_swath\d+)_(original|aug\d+_[^_]+(?:_[^_]+)*)\.npy$', img)
         if match:
             prefix = match.group(1)
             variant_full = match.group(2)
@@ -236,8 +294,8 @@ def get_valid_augmented_pairs(all_imgs, all_lbls, lbl_dir, class_filter):
             if variant_full == 'original':
                 variant = 'original'
             else:
-                # For aug0_vflip, aug1_hflip, etc., extract the last part
-                variant = variant_full.split('_')[-1]  # Gets 'vflip', 'hflip', etc.
+                # Use the full augmentation string as the variant key to ensure unique matching
+                variant = variant_full  # Keep full string like 'aug4_hflip_vflip_rotate_translate'
             
             if prefix not in pairs:
                 pairs[prefix] = {}
@@ -267,8 +325,7 @@ def get_valid_augmented_pairs(all_imgs, all_lbls, lbl_dir, class_filter):
     
     return valid_pairs
 
-def view_mosaic_images(img_dir, lbl_dir, valid_mosaics, max_images, display_min, display_max, 
-                      data_db_min, data_db_max, save_path):
+def view_mosaic_images(img_dir, lbl_dir, valid_mosaics, max_images, amp_clip_min, amp_clip_max, save_path):
     """Handle mosaic image visualization"""
     sample = random.sample(valid_mosaics, min(max_images, len(valid_mosaics)))
     num_images = len(sample)
@@ -291,13 +348,13 @@ def view_mosaic_images(img_dir, lbl_dir, valid_mosaics, max_images, display_min,
         img_path = img_dir / img_file
         label_path = lbl_dir / lbl_file
         
-        if plot_image_with_boxes(ax, img_path, label_path, display_min, display_max):
+        if plot_image_with_boxes(ax, img_path, label_path, amp_clip_min, amp_clip_max):
             # Set title as filename without .npy extension
             title = img_file.replace('.npy', '')
             ax.set_title(title, fontsize=8)
     
     # Add colorbars for each row that has images
-    add_colorbars_to_rows(fig, row_axes, display_min, display_max, data_db_min, data_db_max)
+    add_colorbars_to_rows(fig, row_axes, amp_clip_min, amp_clip_max)
     
     fig.text(0.5, 0.03, "Figure: Randomly selected mosaic images with bounding box annotations.",
              ha='center', fontsize=10)
@@ -307,11 +364,8 @@ def view_mosaic_images(img_dir, lbl_dir, valid_mosaics, max_images, display_min,
         print(f"Figure saved to {save_path}")
     else:
         plt.show()
-    
-    print(f"Displayed {num_images} mosaic image crops with bounding boxes.")
 
-def view_augmented_pairs(img_dir, lbl_dir, valid_pairs, max_images, display_min, display_max,
-                        data_db_min, data_db_max, save_path):
+def view_augmented_pairs(img_dir, lbl_dir, valid_pairs, max_images, amp_clip_min, amp_clip_max, save_path):
     """Handle augmented image pair visualization"""
     sample = random.sample(valid_pairs, min(max_images // 2, len(valid_pairs)))
     num_pairs = len(sample)
@@ -319,7 +373,7 @@ def view_augmented_pairs(img_dir, lbl_dir, valid_pairs, max_images, display_min,
     num_cols = min(5, num_pairs)
     num_rows = 2
 
-    fig, gs = setup_figure_and_grid(num_cols, num_rows, "Data Augmentation Examples")
+    fig, gs = setup_figure_and_grid(num_cols, num_rows, "Raw Data Augmentation Examples")
     row_axes = [[] for _ in range(num_rows)]
 
     for col, ((orig_img, orig_lbl), (aug_img, aug_lbl)) in enumerate(sample):
@@ -329,7 +383,7 @@ def view_augmented_pairs(img_dir, lbl_dir, valid_pairs, max_images, display_min,
             img_path = img_dir / img_file
             label_path = lbl_dir / lbl_file
 
-            if plot_image_with_boxes(ax, img_path, label_path, display_min, display_max):
+            if plot_image_with_boxes(ax, img_path, label_path, amp_clip_min, amp_clip_max):
                 if row == 0:
                     title_base = img_file.replace('.npy', '')
                     first_underscore = title_base.find('_')
@@ -338,10 +392,20 @@ def view_augmented_pairs(img_dir, lbl_dir, valid_pairs, max_images, display_min,
                     title_wrapped = title_base.replace('swath', '\nswath')
                     ax.set_title(title_wrapped, fontsize=7, loc='center')
                 elif row == 1:
-                    aug_title = re.search(r'(aug[^.]+)', lbl_file)
-                    ax.set_title(aug_title.group(1) if aug_title else '', fontsize=8)
+                    # Extract the full augmentation description
+                    aug_match = re.search(r'(aug\d+_[^.]+)', lbl_file.replace('.txt', ''))
+                    if aug_match:
+                        full_aug = aug_match.group(1)
+                        # Show the full augmentation but limit length for display
+                        if len(full_aug) > 25:
+                            display_title = full_aug[:22] + '...'
+                        else:
+                            display_title = full_aug
+                    else:
+                        display_title = ''
+                    ax.set_title(display_title, fontsize=7)
                
-    add_colorbars_to_rows(fig, row_axes, display_min, display_max, data_db_min, data_db_max)
+    add_colorbars_to_rows(fig, row_axes, amp_clip_min, amp_clip_max)
 
     fig.text(0.5, 0.03, "Figure: Top row: original images. Bottom row: corresponding augmented versions.",
              ha='center', fontsize=10)
@@ -352,14 +416,11 @@ def view_augmented_pairs(img_dir, lbl_dir, valid_pairs, max_images, display_min,
     else:
         plt.show()
 
-    print(f"Displayed {num_images} image crops with bounding boxes.")
-
 def view_augmentations(base_dir='.', max_images=10, class_filter=None, save_path=None, 
-                       clip_db_min=None, clip_db_max=None, select_mosaics=False, 
-                       data_db_min=0.00, data_db_max=37.09,
+                       amp_clip_min=None, amp_clip_max=None, select_mosaics=False,
                        img_subdir='images', lbl_subdir='labels'):
     """
-    Visualize SAR augmentation examples.
+    Visualize SAR augmentation examples for unprocessed augmented data.
     
     Parameters:
     -----------
@@ -371,33 +432,29 @@ def view_augmentations(base_dir='.', max_images=10, class_filter=None, save_path
         Filter images containing specific class ID
     save_path : str, optional
         Path to save figure instead of displaying
-    clip_db_min, clip_db_max : float, optional
-        Clipping values in dB units
+    amp_clip_min, amp_clip_max : float, optional
+        Raw amplitude clipping values. Defaults: 1.00 (1%) and 71.51 (99%) percentiles
     select_mosaics : bool, default False
         Whether to display mosaic images instead of augmented pairs
-    data_db_min, data_db_max : float, default (0.00, 37.09)
-        The actual dB range of your input data for conversion calculations
     img_subdir : str, default 'images'
-        Subdirectory name containing .npy image files
+        Subdirectory name containing .npy image files (shape: H, W, dtype: complex64)
     lbl_subdir : str, default 'labels'
         Subdirectory name containing .txt label files
     """
     img_dir = Path(base_dir) / img_subdir
     lbl_dir = Path(base_dir) / lbl_subdir
 
+    # Collect only .npy image files
     all_imgs = sorted([p.name for p in img_dir.glob('*.npy')])
     all_lbls = sorted([p.name for p in lbl_dir.glob('*.txt')])
+
+    if not all_imgs:
+        print(f"No .npy files found in {img_dir}")
+        return
 
     # Pre-load all label files into cache if class filtering is needed
     if class_filter is not None:
         preload_label_cache(lbl_dir, all_lbls)
-
-    # Validate and convert dB clipping parameters
-    clip_min_norm, clip_max_norm = validate_and_convert_clipping(clip_db_min, clip_db_max, data_db_min, data_db_max)
-    
-    # Set display range
-    display_min = clip_min_norm if clip_min_norm is not None else 0.0
-    display_max = clip_max_norm if clip_max_norm is not None else 1.0
 
     if select_mosaics:
         valid_mosaics = get_valid_mosaic_pairs(all_imgs, all_lbls, lbl_dir, class_filter)
@@ -405,11 +462,68 @@ def view_augmentations(base_dir='.', max_images=10, class_filter=None, save_path
             print("No valid mosaic image-label pairs found.")
             return
         view_mosaic_images(img_dir, lbl_dir, valid_mosaics, max_images, 
-                          display_min, display_max, data_db_min, data_db_max, save_path)
+                          amp_clip_min, amp_clip_max, save_path)
     else:
         valid_pairs = get_valid_augmented_pairs(all_imgs, all_lbls, lbl_dir, class_filter)
         if not valid_pairs:
             print("No valid original-augmented image-label pairs found.")
             return
         view_augmented_pairs(img_dir, lbl_dir, valid_pairs, max_images,
-                           display_min, display_max, data_db_min, data_db_max, save_path)
+                           amp_clip_min, amp_clip_max, save_path)
+
+
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description='Visualize SAR augmentation examples for unprocessed augmented data (complex64 .npy files)',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # View augmentation pairs (uses default amplitude clipping: 1.00 to 71.51)
+  %(prog)s data/train_hvrt_bal_alt
+  
+  # Save visualization
+  %(prog)s data/train_hvrt_bal_alt --max-images 4 --save-path output.png
+  
+  # View with custom amplitude clipping
+  %(prog)s data/train_hvrt_bal_alt --amp-clip-min 2.0 --amp-clip-max 50.0
+  
+  # View mosaic images
+  %(prog)s data/train_hvrt_bal_alt --select-mosaics
+        """
+    )
+    
+    parser.add_argument('base_dir', default='.', nargs='?',
+                       help='Base directory containing image and label subdirectories (default: current directory)')
+    parser.add_argument('--max-images', type=int, default=10,
+                       help='Maximum number of images to display (default: 10)')
+    parser.add_argument('--class-filter', type=int, choices=[0, 1],
+                       help='Filter images containing specific class ID (0=is_vessel, 1=is_fishing)')
+    parser.add_argument('--save-path',
+                       help='Path to save figure instead of displaying')
+    parser.add_argument('--amp-clip-min', type=float,
+                       help='Minimum raw amplitude value for clipping (default: 1.00)')
+    parser.add_argument('--amp-clip-max', type=float,
+                       help='Maximum raw amplitude value for clipping (default: 71.51)')
+    parser.add_argument('--select-mosaics', action='store_true',
+                       help='Display mosaic images instead of augmented pairs')
+    parser.add_argument('--img-subdir', default='images',
+                       help='Subdirectory name containing .npy image files (shape: H, W, dtype: complex64)')
+    parser.add_argument('--lbl-subdir', default='labels',
+                       help='Subdirectory name containing .txt label files (default: labels)')
+    
+    args = parser.parse_args()
+    
+    # Call the main function
+    view_augmentations(
+        base_dir=args.base_dir,
+        max_images=args.max_images,
+        class_filter=args.class_filter,
+        save_path=args.save_path,
+        amp_clip_min=args.amp_clip_min,
+        amp_clip_max=args.amp_clip_max,
+        select_mosaics=args.select_mosaics,
+        img_subdir=args.img_subdir,
+        lbl_subdir=args.lbl_subdir
+    )
