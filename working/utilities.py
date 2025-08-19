@@ -7,12 +7,14 @@ Author: Peter Millitz
 Created: 2025-07-14
 
 """
-
+import os
+import glob
 import random
 import subprocess
 import csv
 import numpy as np
 import cv2
+from PIL import Image
 import yaml
 import shutil
 from pathlib import Path
@@ -136,77 +138,27 @@ def extract_list_from_command(command, output_file=None, print_summary=False, co
 
     return lines
 
-#import numpy as np
-#import cv2
-#import shutil
-#from pathlib import Path
-#from tqdm import tqdm
 
-def convert_sar_dataset_to_png(images_input_path, images_output_path, labels_input_path, labels_output_path):
+def preview_image_shapes(image_dir, extension='png', limit=5):
     """
-    Convert SAR dataset from .npy to .png format.
-    
-    Args:
-        images_input_path (str or Path): Path to directory containing .npy image files
-        images_output_path (str or Path): Path to output directory for PNG images
-        labels_input_path (str or Path): Path to directory containing .txt label files
-        labels_output_path (str or Path): Path to output directory for copied labels
+    Prints shape, mode, and dtype of the first few images in a directory.
+
+    Parameters:
+    - image_dir (str): Path to the directory containing image files.
+    - extension (str): File extension to filter by (default: 'png').
+    - limit (int): Number of images to preview (default: 5).
     """
-    print("Converting SAR Dataset to PNG Format...")
-    
-    # Setup paths
-    images_input_path = Path(images_input_path)
-    images_output_path = Path(images_output_path)
-    labels_input_path = Path(labels_input_path)
-    labels_output_path = Path(labels_output_path)
-    
-    # Create output directories
-    images_output_path.mkdir(parents=True, exist_ok=True)
-    labels_output_path.mkdir(parents=True, exist_ok=True)
-    
-    # Get all .npy files
-    npy_files = list(images_input_path.glob("*.npy"))
-    print(f"Found {len(npy_files)} .npy files to convert")
-    
-    if not npy_files:
-        print(f"No .npy files found in {images_input_path}")
+    image_files = glob.glob(os.path.join(image_dir, f'*.{extension}'))[:limit]
+
+    if not image_files:
+        print(f"No images with extension '.{extension}' found in {image_dir}")
         return
-    
-    # Convert with progress bar
-    converted = 0
-    failed = 0
-    
-    for npy_file in tqdm(npy_files, desc="Converting"):
+
+    for img_path in image_files:
         try:
-            # Load SAR data (3, H, W) float32 [0,1] - variable dimensions
-            arr = np.load(npy_file).astype(np.float32)
-            
-            # Convert to standard image format
-            if arr.shape[0] == 3:  # (3, H, W) to (H, W, 3)
-                arr = np.transpose(arr, (1, 2, 0))
-           
-            # Convert to uint8 [0, 255]
-            arr = (arr * 255).astype(np.uint8)
-            
-            # Save as PNG
-            png_file = images_output_path / f"{npy_file.stem}.png"
-            success = cv2.imwrite(str(png_file), arr)
-            
-            if success:
-                # Copy corresponding label
-                label_file = labels_input_path / f"{npy_file.stem[:-5]}.txt"
-                if label_file.exists():
-                    new_label_file = labels_output_path / f"{npy_file.stem}.txt"
-                    shutil.copy(label_file, new_label_file)
-                    converted += 1
-                else:
-                    print(f"Warning: No label for {npy_file.name}")
-            else:
-                failed += 1
-                
+            img = Image.open(img_path)
+            arr = np.array(img)
+            print(f"{os.path.basename(img_path)}: shape={arr.shape}, mode={img.mode}, dtype={arr.dtype}")
         except Exception as e:
-            failed += 1
-            if failed <= 5:  # Show first 5 errors
-                print(f"Error with {npy_file.name}: {e}")
-    
-    print(f"Conversion complete: {converted} successful, {failed} failed")
+            print(f"Error processing {img_path}: {e}")
+
