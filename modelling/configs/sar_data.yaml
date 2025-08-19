@@ -1,8 +1,0 @@
-names:
-- is_vessel
-- is_fishing
-nc: 2
-path: /home/peterm/UWA/CITS5014/SARFish/modelling/data
-test: test
-train: train
-val: val
