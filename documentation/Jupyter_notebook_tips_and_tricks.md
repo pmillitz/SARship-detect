@@ -25,3 +25,27 @@ jupyter nbconvert --to html myfile.ipynb
 ```
 
 It would generate `myfile.html` for you.
+
+# How to reference a directory at a different level when importing modules
+
+For example, I want to import a function from a module two directory levels up from my current working directory:
+
+```python
+import sys
+sys.path.append('../../working')
+
+from utilities import preview_image_shapes
+
+# Examine the shape png files
+preview_image_shapes(str(PROJECT_ROOT / 'data' / 'val_alt' / 'images'), 'png', limit=5)
+```
+
+The output:
+
+```
+f298dbd78ef977d5v_058.00846400999999730175_006.22928041299999968317_swath3_proc.png: shape=(96, 96, 3), mode=RGB, dtype=uint8
+f298dbd78ef977d5v_056.93961363999999747421_007.31962743500000012631_swath2_proc.png: shape=(96, 96, 3), mode=RGB, dtype=uint8
+758991708403f218v_004.10213002600000020692_008.17413784700000078942_swath2_proc.png: shape=(96, 96, 3), mode=RGB, dtype=uint8
+758991708403f218v_003.96133040000000002934_009.09650325500000001000_swath3_proc.png: shape=(96, 96, 3), mode=RGB, dtype=uint8
+f298dbd78ef977d5v_057.59236422000000032995_007.53724813699999973693_swath2_proc.png: shape=(96, 96, 3), mode=RGB, dtype=uint8
+```
