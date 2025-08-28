@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 
 """
-create_crop_v2.py
+create_crop.py
 
 Author: Peter Millitz
 Created: 2025-07-12
-Modified: 2025-07-15 - Added support for spatial indexing module
 
 This script extracts image crops of a given size from raw 2D SAR image arrays based on vessel
 detection annotations and outputs them as NumPy arrays (.npy) with the same shape, along with
@@ -15,9 +14,10 @@ Zero padding is used as the default value for complex64 SAR data. The crop size,
 confidence level and other parameters are specified via the config.yaml file. A summary CSV
 file listing processing statisitcs for each input image, is also output.
 
-NEW in v2: Supports spatial indexing for efficient multi-object crops when processing
-large crop sizes (e.g., 1024x1024). Automatically detects and uses spatial_processor module
-when available and appropriate.
+Modified: 2025-07-15 - Added support for spatial indexing module
+    Supports spatial indexing for efficient multi-object crops when processing
+    large crop sizes (e.g., 1024x1024). Automatically detects and uses spatial_processor module
+    when available and appropriate.
 """
 
 import pandas as pd
@@ -27,7 +27,7 @@ from pathlib import Path
 import sys
 from datetime import datetime
 
-# NEW: Try to import spatial processing module
+# Try to import spatial processing module
 try:
     from spatial_processor import SpatialCropProcessor, process_scene_with_spatial_indexing
     SPATIAL_AVAILABLE = True
@@ -375,7 +375,7 @@ def main(config_file="config.yaml", base_dir=".", data_split="train"):
     """
     Main driver function to extract crops and labels for vessel detection from SAR SLC scenes.
     
-    NEW in v2: Supports spatial indexing for efficient multi-object crops when processing
+    Supports spatial indexing for efficient multi-object crops when processing
     large crop sizes. Automatically detects and uses spatial_processor module when available.
 
     Args:
@@ -713,7 +713,7 @@ def main(config_file="config.yaml", base_dir=".", data_split="train"):
                     force_screen=True)
         total_crops = sum(s.get('num_crops', 0) for s in summary)
         avg_ann_per_crop = total_processed / max(1, total_crops) if summary else 0
-        logger.print(f"Total crops created: {total_crops}", force_screen=True)
+        logger.print(f"Total crops of size {crop_size} x {crop_size} created: {total_crops}", force_screen=True)
         logger.print(f"Total annotations processed: {total_processed}", force_screen=True)
         logger.print(f"Average annotations per crop: {avg_ann_per_crop:.2f}", force_screen=True)
         
@@ -767,7 +767,7 @@ def main(config_file="config.yaml", base_dir=".", data_split="train"):
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description="Create crops from SAR data (v2 with spatial indexing support)")
+    parser = argparse.ArgumentParser(description="Create crops from SAR data with optional spatial indexing")
     parser.add_argument("--config", default="config.yaml", help="Configuration file (default: config.yaml)")
     parser.add_argument("--base-dir", required=True, help="Base directory for input/output paths")
     parser.add_argument("--data-split", choices=['train', 'val', 'test'], required=True, 

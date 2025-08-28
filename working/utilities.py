@@ -13,6 +13,7 @@ import random
 import subprocess
 import csv
 import numpy as np
+import pandas as pd
 import cv2
 from PIL import Image
 import yaml
@@ -161,4 +162,33 @@ def preview_image_shapes(image_dir, extension='png', limit=5):
             print(f"{os.path.basename(img_path)}: shape={arr.shape}, mode={img.mode}, dtype={arr.dtype}")
         except Exception as e:
             print(f"Error processing {img_path}: {e}")
+
+import pandas as pd
+
+def summarise_csv(filepath):
+    """
+    Load a CSV file and return a summary DataFrame with count, missing, min, and max values,
+    excluding min/max for non-numeric columns.
+
+    Parameters:
+        filepath (str): Path to the CSV file.
+
+    Returns:
+        pd.DataFrame: Summary statistics for each column.
+    """
+    df = pd.read_csv(filepath)
+
+    # Identify numeric columns only
+    numeric_cols = df.select_dtypes(include='number').columns
+
+    summary = pd.DataFrame({
+        "dtype": df.dtypes.astype(str),
+        "count": df.count(),
+        "missing": df.isna().sum(),
+        "min": df[numeric_cols].min(),
+        "max": df[numeric_cols].max()
+    })
+
+    return summary
+
 
