@@ -104,6 +104,51 @@ class VesselLengthRegressor:
             'vla': vla
         } 
     
+    def calculate_metrics_by_class(self, y_true: np.ndarray, y_pred: np.ndarray, 
+                                 classes: np.ndarray, split_name: str = "") -> Dict[str, Any]:
+        """
+        Calculate metrics separately for each class.
+        
+        Args:
+            y_true: True vessel lengths
+            y_pred: Predicted vessel lengths
+            classes: Class labels (0=vessel, 1=fishing)
+            split_name: Name for printing (e.g., "Train", "Val", "Test")
+        
+        Returns:
+            Dictionary with overall and per-class metrics
+        """
+        # Overall metrics
+        overall_metrics = self.calculate_metrics(y_true, y_pred)
+        
+        # Initialize results
+        results = {
+            'overall': overall_metrics,
+            'by_class': {}
+        }
+        
+        # Calculate metrics for each class
+        unique_classes = np.unique(classes)
+        class_names = {0: 'vessel', 1: 'fishing'}
+        
+        for cls in unique_classes:
+            mask = classes == cls
+            if np.sum(mask) > 0:  # Check if class has samples
+                cls_metrics = self.calculate_metrics(y_true[mask], y_pred[mask])
+                cls_metrics['n_samples'] = int(np.sum(mask))
+                results['by_class'][int(cls)] = cls_metrics
+        
+        # Print formatted results
+        if split_name:
+            print(f"\n=== {split_name} Metrics ===")
+            print(f"Overall: MAE={overall_metrics['mae']:.2f}m, RMSE={overall_metrics['rmse']:.2f}m, R²={overall_metrics['r2']:.3f}, VLA={overall_metrics['vla']:.3f}")
+            
+            for cls, metrics in results['by_class'].items():
+                cls_name = class_names.get(cls, f"Class_{cls}")
+                print(f"{cls_name.capitalize()}: MAE={metrics['mae']:.2f}m, RMSE={metrics['rmse']:.2f}m, R²={metrics['r2']:.3f}, VLA={metrics['vla']:.3f} (n={metrics['n_samples']})")
+        
+        return results
+    
     def save_model(self, save_path: str, log_dir: str) -> str:
         """
         Save the trained model.
@@ -269,4 +314,3 @@ class VesselLengthRegressor:
             plot_data['test_metrics'], 'Test',
             plot_data.get('test_classes')
         )
-
