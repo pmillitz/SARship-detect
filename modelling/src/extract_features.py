@@ -31,7 +31,7 @@ def extract_features(model_path, metadata_path, image_dir, file_ext, output_csv)
             continue
 
         for box in boxes:
-            xywh = box.xywh.cpu().numpy().flatten()
+            xywh = box.xywhn.cpu().numpy().flatten()
             conf = box.conf.item()
             cls = int(box.cls.item())
             width, height = xywh[2], xywh[3]
