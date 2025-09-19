@@ -31,9 +31,9 @@ class VesselLengthRegressor:
             sample_weights: Dictionary mapping class labels to weights (e.g., {0: 0.8, 1: 1.0})
         """
         self.model_params = model_params or {'n_estimators': 100, 'random_state': 42}
-        self.feature_cols = feature_cols or ['width', 'height', 'conf', 'class']
+        self.feature_cols = feature_cols or ['width', 'height', 'class']
         self.sample_weights = sample_weights or {0: 1.0, 1: 1.0}  # Default: equal weights
-        self.target_col = 'length'
+        self.target_col = 'vessel_length_m'
         self.model = None
         
     def load_and_prepare_data(self, 
@@ -222,13 +222,11 @@ class VesselLengthRegressor:
         
         # Calculate metrics
         train_metrics = self.calculate_metrics(y_train, y_train_pred)  # added later
-        val_metrics = self.calculate_metrics(y_val, y_val_pred)
         test_metrics = self.calculate_metrics(y_test, y_test_pred)
         
         # Print results
         print(f"[Train] MAE: {train_metrics['mae']:.2f}, RMSE: {train_metrics['rmse']:.2f}, R²: {train_metrics['r2']:.3f}, VLA: {train_metrics['vla']:.3f}")  # added later
-        print(f"[Validation] MAE: {val_metrics['mae']:.2f}, RMSE: {val_metrics['rmse']:.2f}, R²: {val_metrics['r2']:.3f}, VLA: {val_metrics['vla']:.3f}")
-        print(f"[Test]      MAE: {test_metrics['mae']:.2f}, RMSE: {test_metrics['rmse']:.2f}, R²: {test_metrics['r2']:.3f}, VLA: {test_metrics['vla']:.3f}")
+        print(f"[Test]  MAE: {test_metrics['mae']:.2f}, RMSE: {test_metrics['rmse']:.2f}, R²: {test_metrics['r2']:.3f}, VLA: {test_metrics['vla']:.3f}")
         
         
         # Save model if requested
@@ -240,15 +238,11 @@ class VesselLengthRegressor:
             plot_data = {
                 'train_true': y_train,  # added later 
                 'train_pred': y_train_pred,  # added later                 
-                'val_true': y_val,
-                'val_pred': y_val_pred,
                 'test_true': y_test,
                 'test_pred': y_test_pred,
                 'train_metrics': train_metrics,  # added later
-                'val_metrics': val_metrics,
                 'test_metrics': test_metrics,
                 'train_classes': train_classes,  # added later
-                'val_classes': val_classes,
                 'test_classes': test_classes
             }
             return self.model, plot_data
@@ -297,18 +291,18 @@ class VesselLengthRegressor:
         plt.grid(True)
         plt.show()
 
-    def plot_results(self, plot_data: Dict) -> None:
+    def plot_results(self, plot_data: Dict, save_path: Optional[str] = None, log_dir: str = 'runs/vlength') -> None:
         """
         Create and display plots for notebook use.
         
         Args:
             plot_data: Dictionary containing true/pred values and metrics
+            save_path: Optional path to save the plot (e.g., 'results.png')
         """
-        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        fig, axes = plt.subplots(1, 2, figsize=(10, 5))
         
         datasets = [
             ('train', 'Training'),
-            ('val', 'Validation'), 
             ('test', 'Test')
         ]
         
@@ -345,4 +339,17 @@ class VesselLengthRegressor:
             ax.grid(True)
         
         plt.tight_layout()
+
+        # Save plot if path provided
+        if save_path:
+            # If no directory specified, save to log directory (same logic as model saving)
+            if not os.path.dirname(save_path):
+                full_save_path = os.path.join(log_dir, save_path)
+                os.makedirs(log_dir, exist_ok=True)
+        else:
+            full_save_path = save_path
+    
+        plt.savefig(full_save_path, dpi=300, bbox_inches='tight')
+        print(f"Plot saved to {full_save_path}") 
+
         plt.show()

@@ -42,8 +42,8 @@ def plot_total_loss(csv_path: Union[str, Path],
     
     # Create the plot
     plt.figure(figsize=figsize)
-    plt.plot(df['epoch'], df['total_train_loss'], label='Training Loss', color='blue', linewidth=2)
-    plt.plot(df['epoch'], df['total_val_loss'], label='Validation Loss', color='red', linewidth=2)
+    plt.plot(df['epoch'], df['total_train_loss'], label='Training Loss', color='red', linewidth=2)
+    plt.plot(df['epoch'], df['total_val_loss'], label='Validation Loss', color='blue', linewidth=2)
     
     # Extract run info from path for title
     run_info = ""

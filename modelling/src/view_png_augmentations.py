@@ -18,8 +18,8 @@ Expected directory structure:
 
 PNG Format:
 - Red channel: Normalized amplitude (0-255) → divide by 255 to get [0,1] range
-- Green channel: Normalized phase (0-255) 
-- Blue channel: Zeros
+- Green channel: Normalized phase (0-255) (not used)
+- Blue channel: Zeros (not used)
 
 Displays up to 5 randomly selected image-label pairs in two rows (max 5 per row).
 Each original-augmented image pair is aligned vertically. Handles multiple bounding
@@ -180,7 +180,7 @@ def setup_figure_and_grid(num_cols, num_rows, title):
     fig.suptitle(title, fontsize=18, y=0.90)
     return fig, gs
 
-def plot_png_image_with_boxes(ax, img_path, label_path, amp_clip_min, amp_clip_max):
+def plot_png_image_with_boxes(ax, img_path, label_path, amp_clip_min, amp_clip_max, png_amp_min=1.00, png_amp_max=71.51):
     """Plot single PNG image with bounding boxes"""
     try:
         amplitude = load_png_amplitude(img_path)  # Normalized amplitude values [0,1]
@@ -197,11 +197,11 @@ def plot_png_image_with_boxes(ax, img_path, label_path, amp_clip_min, amp_clip_m
     clip_max = amp_clip_max if amp_clip_max is not None else default_amp_max
     
     # PNG files store normalized dB values, not amplitude values!
-    # PNG creation process was: amplitude [1.00, 71.51] → dB → normalize to [0,1] → PNG
+    # PNG creation process was: amplitude [png_amp_min, png_amp_max] → dB → normalize to [0,1] → PNG
     # So PNG red channel contains normalized dB values in [0,1] range
-    
-    PNG_AMP_MIN = 1.00  # Original amplitude clipping used during PNG creation
-    PNG_AMP_MAX = 71.51
+
+    PNG_AMP_MIN = png_amp_min  # Original amplitude clipping used during PNG creation
+    PNG_AMP_MAX = png_amp_max
     
     # Step 1: PNG red channel contains normalized dB values [0,1]
     normalized_db = amplitude  # This is actually normalized dB, not amplitude!
@@ -248,12 +248,12 @@ def plot_png_image_with_boxes(ax, img_path, label_path, amp_clip_min, amp_clip_m
     ax.set_yticks([])
     return True
 
-def add_colorbars_to_rows(fig, row_axes, amp_clip_min, amp_clip_max):
+def add_colorbars_to_rows(fig, row_axes, amp_clip_min, amp_clip_max, png_amp_min=1.00, png_amp_max=71.51):
     """Add colorbars for each row that has images"""
-    # Use default clipping values if not provided
-    default_amp_min = 1.00
-    default_amp_max = 71.51
-    
+    # Use default clipping values if not provided (use PNG creation bounds as defaults)
+    default_amp_min = png_amp_min
+    default_amp_max = png_amp_max
+
     clip_min = amp_clip_min if amp_clip_min is not None else default_amp_min
     clip_max = amp_clip_max if amp_clip_max is not None else default_amp_max
     
@@ -339,7 +339,7 @@ def get_random_png_images(all_imgs, all_lbls, lbl_dir, class_filter, max_images=
     
     return random.sample(valid_images, min(max_images, len(valid_images)))
 
-def view_mosaic_png_images(img_dir, lbl_dir, valid_mosaics, max_images, amp_clip_min, amp_clip_max, save_path):
+def view_mosaic_png_images(img_dir, lbl_dir, valid_mosaics, max_images, amp_clip_min, amp_clip_max, save_path, png_amp_min=1.00, png_amp_max=71.51):
     """Handle mosaic PNG image visualization"""
     sample = random.sample(valid_mosaics, min(max_images, len(valid_mosaics)))
     num_images = len(sample)
@@ -365,18 +365,13 @@ def view_mosaic_png_images(img_dir, lbl_dir, valid_mosaics, max_images, amp_clip
         img_path = img_dir / img_file
         label_path = lbl_dir / lbl_file
         
-        if plot_png_image_with_boxes(ax, img_path, label_path, amp_clip_min, amp_clip_max):
-            # Set title as filename without _proc.png extension with proper wrapping
+        if plot_png_image_with_boxes(ax, img_path, label_path, amp_clip_min, amp_clip_max, png_amp_min, png_amp_max):
+            # Set title as filename without _proc.png extension without wrapping
             title_base = img_file.replace('_proc.png', '')
-            # Apply same wrapping logic as other modes
-            first_underscore = title_base.find('_')
-            if first_underscore != -1:
-                title_base = title_base[:first_underscore + 1] + '\n' + title_base[first_underscore + 1:]
-            title_wrapped = title_base.replace('minority', '\nminority')
-            ax.set_title(title_wrapped, fontsize=7, loc='center')
+            ax.set_title(title_base, fontsize=7, loc='center')
     
     # Add colorbars for each row that has images
-    add_colorbars_to_rows(fig, row_axes, amp_clip_min, amp_clip_max)
+    add_colorbars_to_rows(fig, row_axes, amp_clip_min, amp_clip_max, png_amp_min, png_amp_max)
     
     fig.text(0.5, 0.03, "Figure: Randomly selected PNG mosaic images with bounding box annotations.",
              ha='center', fontsize=10)
@@ -387,7 +382,7 @@ def view_mosaic_png_images(img_dir, lbl_dir, valid_mosaics, max_images, amp_clip
     else:
         plt.show()
 
-def view_augmented_png_pairs(img_dir, lbl_dir, valid_pairs, max_images, amp_clip_min, amp_clip_max, save_path):
+def view_augmented_png_pairs(img_dir, lbl_dir, valid_pairs, max_images, amp_clip_min, amp_clip_max, save_path, png_amp_min=1.00, png_amp_max=71.51):
     """Handle augmented PNG image pair visualization"""
     sample = random.sample(valid_pairs, min(max_images // 2, len(valid_pairs)))
     num_pairs = len(sample)
@@ -405,7 +400,7 @@ def view_augmented_png_pairs(img_dir, lbl_dir, valid_pairs, max_images, amp_clip
             img_path = img_dir / img_file
             label_path = lbl_dir / lbl_file
 
-            if plot_png_image_with_boxes(ax, img_path, label_path, amp_clip_min, amp_clip_max):
+            if plot_png_image_with_boxes(ax, img_path, label_path, amp_clip_min, amp_clip_max, png_amp_min, png_amp_max):
                 if row == 0:
                     title_base = img_file.replace('_proc.png', '')
                     first_underscore = title_base.find('_')
@@ -418,16 +413,13 @@ def view_augmented_png_pairs(img_dir, lbl_dir, valid_pairs, max_images, amp_clip
                     aug_match = re.search(r'(aug\d+_[^.]+)', lbl_file.replace('_proc.txt', ''))
                     if aug_match:
                         full_aug = aug_match.group(1)
-                        # Show the full augmentation but limit length for display
-                        if len(full_aug) > 25:
-                            display_title = full_aug[:22] + '...'
-                        else:
-                            display_title = full_aug
+                        # Display full augmentation code without truncation or wrapping
+                        display_title = full_aug
                     else:
                         display_title = ''
                     ax.set_title(display_title, fontsize=7)
                
-    add_colorbars_to_rows(fig, row_axes, amp_clip_min, amp_clip_max)
+    add_colorbars_to_rows(fig, row_axes, amp_clip_min, amp_clip_max, png_amp_min, png_amp_max)
 
     fig.text(0.5, 0.03, "Figure: Top row: original PNG images. Bottom row: corresponding augmented PNG versions.",
              ha='center', fontsize=10)
@@ -438,7 +430,7 @@ def view_augmented_png_pairs(img_dir, lbl_dir, valid_pairs, max_images, amp_clip
     else:
         plt.show()
 
-def view_random_png_images(img_dir, lbl_dir, random_images, max_images, amp_clip_min, amp_clip_max, save_path):
+def view_random_png_images(img_dir, lbl_dir, random_images, max_images, amp_clip_min, amp_clip_max, save_path, png_amp_min=1.00, png_amp_max=71.51):
     """Handle random PNG image visualization (non-augmentation mode)"""
     sample = random_images[:max_images]
     num_images = len(sample)
@@ -464,7 +456,7 @@ def view_random_png_images(img_dir, lbl_dir, random_images, max_images, amp_clip
         img_path = img_dir / img_file
         label_path = lbl_dir / lbl_file
         
-        if plot_png_image_with_boxes(ax, img_path, label_path, amp_clip_min, amp_clip_max):
+        if plot_png_image_with_boxes(ax, img_path, label_path, amp_clip_min, amp_clip_max, png_amp_min, png_amp_max):
             # Set title as filename without _proc.png extension with proper wrapping
             title_base = img_file.replace('_proc.png', '')
             # Apply same wrapping logic as augmentation mode
@@ -475,7 +467,7 @@ def view_random_png_images(img_dir, lbl_dir, random_images, max_images, amp_clip
             ax.set_title(title_wrapped, fontsize=7, loc='center')
     
     # Add colorbars for each row that has images
-    add_colorbars_to_rows(fig, row_axes, amp_clip_min, amp_clip_max)
+    add_colorbars_to_rows(fig, row_axes, amp_clip_min, amp_clip_max, png_amp_min, png_amp_max)
     
     fig.text(0.5, 0.03, "Figure: Randomly selected PNG images with bounding box annotations.",
              ha='center', fontsize=10)
@@ -486,9 +478,10 @@ def view_random_png_images(img_dir, lbl_dir, random_images, max_images, amp_clip
     else:
         plt.show()
 
-def view_png_augmentations(base_dir='.', max_images=10, class_filter=None, save_path=None, 
+def view_png_augmentations(base_dir='.', max_images=10, class_filter=None, save_path=None,
                           amp_clip_min=None, amp_clip_max=None, select_mosaics=False,
-                          img_subdir='images', lbl_subdir='labels'):
+                          img_subdir='images', lbl_subdir='labels',
+                          png_amp_min=1.00, png_amp_max=71.51):
     """
     Visualize PNG-processed SAR augmentation examples.
     
@@ -510,6 +503,8 @@ def view_png_augmentations(base_dir='.', max_images=10, class_filter=None, save_
         Subdirectory name containing .png image files
     lbl_subdir : str, default 'labels'
         Subdirectory name containing .txt label files
+    png_amp_min, png_amp_max : float, default 1.00, 71.51
+        Original amplitude bounds used during PNG creation (VH-amp statistics)
     """
     img_dir = Path(base_dir) / img_subdir
     lbl_dir = Path(base_dir) / lbl_subdir
@@ -531,8 +526,8 @@ def view_png_augmentations(base_dir='.', max_images=10, class_filter=None, save_
         if not valid_mosaics:
             print("No valid mosaic PNG image-label pairs found.")
             return
-        view_mosaic_png_images(img_dir, lbl_dir, valid_mosaics, max_images, 
-                              amp_clip_min, amp_clip_max, save_path)
+        view_mosaic_png_images(img_dir, lbl_dir, valid_mosaics, max_images,
+                              amp_clip_min, amp_clip_max, save_path, png_amp_min, png_amp_max)
     else:
         # Try to find augmented pairs first
         valid_pairs = get_valid_augmented_png_pairs(all_imgs, all_lbls, lbl_dir, class_filter)
@@ -540,7 +535,7 @@ def view_png_augmentations(base_dir='.', max_images=10, class_filter=None, save_
         if valid_pairs:
             print(f"Found {len(valid_pairs)} augmented pairs")
             view_augmented_png_pairs(img_dir, lbl_dir, valid_pairs, max_images,
-                                    amp_clip_min, amp_clip_max, save_path)
+                                    amp_clip_min, amp_clip_max, save_path, png_amp_min, png_amp_max)
         else:
             print("No augmented pairs found, switching to non-augmentation mode")
             random_images = get_random_png_images(all_imgs, all_lbls, lbl_dir, class_filter, max_images)
@@ -548,7 +543,7 @@ def view_png_augmentations(base_dir='.', max_images=10, class_filter=None, save_
                 print("No valid PNG image-label pairs found.")
                 return
             view_random_png_images(img_dir, lbl_dir, random_images, max_images,
-                                 amp_clip_min, amp_clip_max, save_path)
+                                 amp_clip_min, amp_clip_max, save_path, png_amp_min, png_amp_max)
 
 if __name__ == "__main__":
     import argparse
@@ -587,6 +582,10 @@ Examples:
                        help='Minimum amplitude value for clipping (scaled to PNG range)')
     parser.add_argument('--amp-clip-max', type=float,
                        help='Maximum amplitude value for clipping (scaled to PNG range)')
+    parser.add_argument('--png-amp-min', type=float, default=1.00,
+                       help='Original minimum amplitude bound used during PNG creation (default: 1.00, VH-amp statistics)')
+    parser.add_argument('--png-amp-max', type=float, default=71.51,
+                       help='Original maximum amplitude bound used during PNG creation (default: 71.51, VH-amp statistics)')
     parser.add_argument('--select-mosaics', action='store_true',
                        help='Display mosaic images instead of augmented pairs')
     parser.add_argument('--img-subdir', default='images',
@@ -606,5 +605,7 @@ Examples:
         amp_clip_max=args.amp_clip_max,
         select_mosaics=args.select_mosaics,
         img_subdir=args.img_subdir,
-        lbl_subdir=args.lbl_subdir
+        lbl_subdir=args.lbl_subdir,
+        png_amp_min=args.png_amp_min,
+        png_amp_max=args.png_amp_max
     )

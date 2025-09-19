@@ -600,10 +600,11 @@ class SARSLCPreprocessingAugmentation:
         for data_path in tqdm(data_files, desc="Processing"):
             # Load single file
             slc_data, labels = self._load_single_file(data_path, labels_dir)
-            
+
             # Always save original
+            base_stem = data_path.stem.replace('_proc', '')  # Remove _proc if present
             self._save_data_label(slc_data, labels, output_dir, output_labels_dir,
-                                f"{data_path.stem}_original", file_extension)
+                                f"{base_stem}_original_proc", file_extension)
             
             # Track original class distribution
             self._update_class_distribution(labels, class_distribution['original'])
@@ -623,7 +624,8 @@ class SARSLCPreprocessingAugmentation:
                     if desc == "none":
                         continue
                     
-                    filename = f"{data_path.stem}_aug{i}_{desc}"
+                    base_stem = data_path.stem.replace('_proc', '')  # Remove _proc if present
+                    filename = f"{base_stem}_aug{i}_{desc}_proc"
                     self._save_data_label(aug_data, aug_labels, output_dir,
                                         output_labels_dir, filename, file_extension)
                     augmentation_count += 1
@@ -665,8 +667,9 @@ class SARSLCPreprocessingAugmentation:
             slc_data, labels = self._load_single_file(data_path, labels_dir)
             
             # Always save original
+            base_stem = data_path.stem.replace('_proc', '')  # Remove _proc if present
             self._save_data_label(slc_data, labels, output_dir, output_labels_dir,
-                                f"{data_path.stem}_original", file_extension)
+                                f"{base_stem}_original_proc", file_extension)
             
             # Track original class distribution
             self._update_class_distribution(labels, class_distribution['original'])
@@ -686,7 +689,8 @@ class SARSLCPreprocessingAugmentation:
                     if desc == "none":
                         continue
                     
-                    filename = f"{data_path.stem}_aug{i}_{desc}"
+                    base_stem = data_path.stem.replace('_proc', '')  # Remove _proc if present
+                    filename = f"{base_stem}_aug{i}_{desc}_proc"
                     self._save_data_label(aug_data, aug_labels, output_dir,
                                         output_labels_dir, filename, file_extension)
                     augmentation_count += 1
@@ -758,7 +762,7 @@ class SARSLCPreprocessingAugmentation:
                 
                 # Create and save mosaic
                 mosaic_slc, mosaic_labels = self.create_mosaic(mosaic_data)
-                filename = f"mosaic_minority_{mosaic_count}"
+                filename = f"mosaic_minority_{mosaic_count}_proc"
                 self._save_data_label(mosaic_slc, mosaic_labels, output_dir,
                                     output_labels_dir, filename, file_extension)
                 
@@ -783,7 +787,7 @@ class SARSLCPreprocessingAugmentation:
                 
                 # Create and save mosaic
                 mosaic_slc, mosaic_labels = self.create_mosaic(mosaic_data)
-                filename = f"mosaic_majority_{mosaic_count}"
+                filename = f"mosaic_majority_{mosaic_count}_proc"
                 self._save_data_label(mosaic_slc, mosaic_labels, output_dir,
                                     output_labels_dir, filename, file_extension)
                 

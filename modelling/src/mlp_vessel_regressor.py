@@ -8,6 +8,8 @@ import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from typing import Tuple, Optional, Dict, Any
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 
 
 def create_mlp_model(input_dim: int = 3, hidden_layers: list = [32, 16, 8]) -> tf.keras.Sequential:
@@ -69,7 +71,8 @@ def create_custom_loss(y_scaler: MinMaxScaler):
         # Safe division
         y_true_safe = tf.maximum(y_true_original, tf.keras.backend.epsilon())
         
-        return tf.reduce_mean(tf.abs((y_pred_original - y_true_original) / y_true_safe))
+        return tf.abs(y_pred_original - y_true_original) / y_true_safe
+        #return tf.reduce_mean(tf.abs((y_pred_original - y_true_original) / y_true_safe))
     
     return absolute_relative_error_scaled
 
@@ -296,3 +299,53 @@ def calculate_metrics_by_class(y_true: np.ndarray, y_pred: np.ndarray,
             print(f"{cls_name:<12} {'MAE:':<4} {metrics['mae']:>6.2f}, {'RMSE:':<5} {metrics['rmse']:>6.2f}, {'R²:':<3} {metrics['r2']:>6.3f}, {'VLA:':<4} {metrics['vla']:>6.3f} (n={metrics['n_samples']})")
     
     return results
+
+
+def plot_results(plot_data: Dict) -> None:
+    """
+    Create and display plots for notebook use.
+    
+    Args:
+        plot_data: Dictionary containing true/pred values and metrics
+    """
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    
+    datasets = [
+        ('train', 'Training'),
+        ('val', 'Validation'), 
+        ('test', 'Test')
+    ]
+    
+    for i, (split, title) in enumerate(datasets):
+        ax = axes[i]
+        plt.sca(ax)  # Set current axis
+        
+        y_true = plot_data[f'{split}_true']
+        y_pred = plot_data[f'{split}_pred']
+        metrics = plot_data[f'{split}_metrics']
+        classes = plot_data.get(f'{split}_classes')
+        
+        if classes is not None:
+            # Color by class
+            colors = ['red' if c == 0 else 'lime' for c in classes]
+            ax.scatter(y_true, y_pred, c=colors, alpha=0.6, edgecolors='k')
+            
+            # Add legend
+            vessel_patch = mpatches.Patch(color='red', label='is_vessel (Class 0)')
+            fishing_patch = mpatches.Patch(color='lime', label='is_fishing (Class 1)')
+            ax.legend(handles=[vessel_patch, fishing_patch])
+        else:
+            ax.scatter(y_true, y_pred, alpha=0.6, edgecolors='k')
+            
+        ax.plot([0, 350], [0, 350], 'r--')
+        ax.set_xlabel('True Vessel Length')
+        ax.set_ylabel('Predicted Vessel Length')
+        ax.set_title(f"{title}: MAE={metrics['mae']:.2f}, RMSE={metrics['rmse']:.2f}, R²={metrics['r2']:.3f}, VLA={metrics['vla']:.3f}", fontsize=10.5)
+        
+        # Set fixed axis limits
+        ax.set_xlim(0, 350)
+        ax.set_ylim(0, 350)
+        ax.grid(True)
+    
+    plt.tight_layout()
+    plt.show()
