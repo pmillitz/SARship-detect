@@ -363,7 +363,7 @@ def find_matching_array(filename_stem, correspondence_row):
         int or None: swath index (1, 2, 3) if match found, None otherwise
     """
     for swath_idx in [1, 2, 3]:
-        swath_col = f"SLC_swath_{swath_idx}_vh"
+        swath_col = f"SLC_swath_{swath_idx}_vv"
         if pd.notna(correspondence_row.get(swath_col)):
             # Extract stem from the correspondence entry (remove .tiff extension)
             corr_stem = Path(correspondence_row[swath_col]).stem
