@@ -18,11 +18,11 @@ create_crop:
   correspondences_path: 'xView3_SLC_GRD_correspondences.csv'
   annotations_path:     ./SARFish_labels/validation/SLC/SLC_validation_labels.csv
   crop_path:
-    train:              train/crops_raw_96s/
-    val:                val/crops_raw_96s/
-    test:               test/crops_raw_96s/
+    train:              train/crops_raw/
+    val:                val/crops_raw/
+    test:               test/crops_raw/
   crop_size:            96 
-  use_spatial_indexing: True
+  use_spatial_indexing: False
   min_crop_distance:    48
   label_confidence:     ['HIGH', 'MEDIUM']
   quiet_mode:           True
