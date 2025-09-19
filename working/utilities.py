@@ -139,7 +139,6 @@ def extract_list_from_command(command, output_file=None, print_summary=False, co
 
     return lines
 
-
 def preview_image_shapes(image_dir, extension='png', limit=5):
     """
     Prints shape, mode, and dtype of the first few images in a directory.
@@ -162,8 +161,6 @@ def preview_image_shapes(image_dir, extension='png', limit=5):
             print(f"{os.path.basename(img_path)}: shape={arr.shape}, mode={img.mode}, dtype={arr.dtype}")
         except Exception as e:
             print(f"Error processing {img_path}: {e}")
-
-import pandas as pd
 
 def summarise_csv(filepath):
     """
@@ -191,4 +188,26 @@ def summarise_csv(filepath):
 
     return summary
 
-
+def unnormalize_features(csv_path, crop_size=96):
+    """
+    Unnormalize width and height from YOLO format to pixel coordinates.
+    Overwrites the original CSV file.
+    
+    Args:
+        csv_path: Path to CSV file with normalized width/height columns
+        crop_size: Size of square crops in pixels (default: 96)
+    """
+    # Load the CSV
+    df = pd.read_csv(csv_path)
+    
+    # Unnormalize width and height
+    df['width_pixels'] = (df['width'] * crop_size).round().astype(int)
+    df['height_pixels'] = (df['height'] * crop_size).round().astype(int)
+    
+    # Save back to original file
+    df.to_csv(csv_path, index=False)
+    
+    print(f"Unnormalized features saved to {csv_path}")
+    print(f"Added columns: width_pixels, height_pixels (crop_size={crop_size})")
+    
+    return df
