@@ -176,7 +176,7 @@ def load_image_list_from_file(file_path, valid_images):
         return []
 
 
-def view_png_channels(base_dir='.', max_images=5, image_list_file=None, save_path=None,
+def view_png_dual_channels(base_dir='.', max_images=5, image_list_file=None, save_path=None,
                      img_subdir='images', lbl_subdir='labels'):
     """
     Visualize PNG channels in a grid layout.
@@ -231,17 +231,17 @@ def view_png_channels(base_dir='.', max_images=5, image_list_file=None, save_pat
     num_rows = 3
 
     fig = plt.figure(figsize=(4 * num_cols, 4 * num_rows), dpi=100)
-    gs = GridSpec(num_rows, num_cols + 1, figure=fig,
-                  width_ratios=[1]*num_cols + [0.05],
+    gs = GridSpec(num_rows, num_cols, figure=fig,
                   wspace=0.1, hspace=0.3)
 
     fig.suptitle("PNG Channel Visualisation - Dual Polarisation SAR", fontsize=18, y=0.95)
 
-    # Channel names and colormaps
+    # Channel names, colormaps, and dB ranges (from dual_polarization_processor.py defaults)
+    epsilon = 1e-6
     channel_info = [
-        ("VH Magnitude", 'gray'),
-        ("VV Magnitude", 'gray'),
-        ("Polarisation Coherence", 'gray')
+        ("VH Magnitude", 'gray', 20 * np.log10(1.0 + epsilon), 20 * np.log10(71.5 + epsilon)),
+        ("VV Magnitude", 'gray', 20 * np.log10(2.0 + epsilon), 20 * np.log10(232.7 + epsilon)),
+        ("Polarisation Coherence", 'gray', 20 * np.log10(4.24 + epsilon), 20 * np.log10(11138.0 + epsilon))
     ]
 
     # Process each image
@@ -254,7 +254,7 @@ def view_png_channels(base_dir='.', max_images=5, image_list_file=None, save_pat
             channels = [vh_magnitude, vv_magnitude, coherence_magnitude]
 
             # Plot each channel in its respective row
-            for row, (channel_data, (channel_name, cmap)) in enumerate(zip(channels, channel_info)):
+            for row, (channel_data, (channel_name, cmap, db_min, db_max)) in enumerate(zip(channels, channel_info)):
                 ax = fig.add_subplot(gs[row, col])
 
                 plot_channel_with_boxes(ax, channel_data, label_path, channel_name, cmap)
@@ -282,17 +282,45 @@ def view_png_channels(base_dir='.', max_images=5, image_list_file=None, save_pat
         # Get the first column's subplot positions to calculate row heights
         first_col_axes = [fig.add_subplot(gs[row, 0]) for row in range(num_rows)]
 
-        for row, (channel_name, cmap) in enumerate(channel_info):
+        for row, (channel_name, cmap, db_min, db_max) in enumerate(channel_info):
             # Get the position of the subplot in this row
             ax_pos = first_col_axes[row].get_position()
             row_bottom = ax_pos.y0
             row_height = ax_pos.height
 
+            # Calculate the position to match inter-column spacing
+            # Get the rightmost subplot position
+            last_col_ax = fig.add_subplot(gs[row, num_cols-1])
+            last_col_pos = last_col_ax.get_position()
+            last_col_ax.remove()
+
+            # Position colorbar with same gap as wspace
+            # Calculate actual gap width between columns
+            if num_cols > 1:
+                # Get second column position to calculate actual gap
+                second_col_ax = fig.add_subplot(gs[row, 1])
+                second_col_pos = second_col_ax.get_position()
+                second_col_ax.remove()
+                actual_gap = second_col_pos.x0 - ax_pos.x1
+            else:
+                # For single image, use a reasonable default gap
+                actual_gap = 0.04  # approximately what wspace=0.1 produces
+
+            cbar_left = last_col_pos.x1 + actual_gap
+
+            # Calculate colorbar width as a fraction of column width to keep it consistent
+            col_width = ax_pos.width  # width of one image column
+            cbar_width = col_width * 0.08  # colorbar is 8% of a column width
+
             # Position colorbar to match the image height exactly
-            cbar_ax = fig.add_axes([0.92, row_bottom, 0.02, row_height])
-            norm = Normalize(vmin=0.0, vmax=1.0)
+            cbar_ax = fig.add_axes([cbar_left, row_bottom, cbar_width, row_height])
+            norm = Normalize(vmin=db_min, vmax=db_max)
             cb = ColorbarBase(cbar_ax, cmap=cm.gray, norm=norm, orientation='vertical')
-            cb.set_label("Normalised Magnitude", fontsize=8)
+            cb.set_label("Magnitude (dB)", fontsize=8)
+
+            # Set only min and max labels
+            cb.set_ticks([db_min, db_max])
+            cb.set_ticklabels([f'{db_min:.1f}', f'{db_max:.1f}'])
             cb.ax.tick_params(labelsize=8)
 
         # Remove the temporary axes we created for positioning
