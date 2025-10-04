@@ -339,7 +339,7 @@ def plot_distribution_analysis(stats, magnitude_values, log_magnitude_values=Non
     
     # Add figure caption
     total_pixels = stats['total_pixels']
-    fig.suptitle(f'Figure 3. Statistical distributions of SLC crop pixel values. Top row: relative frequency density distributions with 1st and 99th percentile markers (red dashed lines). '
+    fig.suptitle(f'Figure 4. Statistical distributions of SLC crop pixel values. Top row: relative frequency density distributions with 1st and 99th percentile markers (red dashed lines). '
                  f' Bottom left: magnitude\n distribution on logarithmic y-axis. Bottom centre: distribution of per-image log-magnitude maximum values. Bottom right: distribution of per-image'
                  f' real part extrema (max and min values).', fontsize=11, y=-0.02, ha='center')
     
