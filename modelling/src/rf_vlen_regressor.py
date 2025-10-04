@@ -147,11 +147,13 @@ class VesselLengthRegressor:
         # Print formatted results with cleaner output
         if split_name:
             print(f"\n=== {split_name} Metrics ===")
-            print(f"{'Overall':<12} {'MAE:':<4} {overall_metrics['mae']:>6.2f}, {'RMSE:':<5} {overall_metrics['rmse']:>6.2f}, {'R²:':<3} {overall_metrics['r2']:>6.3f}, {'VLA:':<4} {overall_metrics['vla']:>6.3f}")
+#            print(f"{'Overall':<12} {'MAE:':<4} {overall_metrics['mae']:>6.2f}, {'RMSE:':<5} {overall_metrics['rmse']:>6.2f}, {'R²:':<3} {overall_metrics['r2']:>6.3f}, {'VLA:':<4} {overall_metrics['vla']:>6.3f}")
+            print(f"{'Overall':<12} {'MAE:':<4} {overall_metrics['mae']:>6.2f}, {'R²:':<3} {overall_metrics['r2']:>6.3f}, {'VLA:':<4} {overall_metrics['vla']:>6.3f}")
             
             for cls, metrics in results['by_class'].items():
                 cls_name = class_names.get(cls, f"Class_{cls}")
-                print(f"{cls_name:<12} {'MAE:':<4} {metrics['mae']:>6.2f}, {'RMSE:':<5} {metrics['rmse']:>6.2f}, {'R²:':<3} {metrics['r2']:>6.3f}, {'VLA:':<4} {metrics['vla']:>6.3f} (n={metrics['n_samples']})")
+#                print(f"{cls_name:<12} {'MAE:':<4} {metrics['mae']:>6.2f}, {'RMSE:':<5} {metrics['rmse']:>6.2f}, {'R²:':<3} {metrics['r2']:>6.3f}, {'VLA:':<4} {metrics['vla']:>6.3f} (n={metrics['n_samples']})")
+                print(f"{cls_name:<12} {'MAE:':<4} {metrics['mae']:>6.2f}, {'R²:':<3} {metrics['r2']:>6.3f}, {'VLA:':<4} {metrics['vla']:>6.3f} (n={metrics['n_samples']})")
         
         return results
     
