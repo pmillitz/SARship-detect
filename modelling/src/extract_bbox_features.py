@@ -56,7 +56,7 @@ def extract_bbox_features(model_path, metadata_path, image_dir, file_ext, output
                 log_print(f"SKIP: Invalid vessel length for {image_name} (length={vessel_length_m})")
                 continue
 
-            result = model(image_path, conf=0.04, iou=0.65, verbose=False)[0]  # conf default=0.25; iou default=0.7
+            result = model(image_path, conf=0.03, iou=0.3, verbose=False)[0]  # conf default=0.25; iou default=0.7
             boxes = result.boxes
             
             if boxes is None or len(boxes) == 0:
