@@ -52,9 +52,9 @@ def plot_total_loss(csv_path: Union[str, Path],
         run_number = csv_path.parent.name
         run_info = f" - Run {run_number}"
     
-    plt.xlabel('Epoch')
-    plt.ylabel('Total Loss')
-    plt.title(f'Training vs Validation Loss Curves{run_info}')
+    plt.xlabel('Epoch', fontsize=12)
+    plt.ylabel('Total Loss', fontsize=12)
+    plt.title(f'Training vs Validation Loss Curves{run_info}', fontsize=14)
     plt.legend()
     plt.grid(True, alpha=0.3)
 
