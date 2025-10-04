@@ -110,7 +110,8 @@ def run_iou_analysis(gt_dir: str, pred_dir: str, iou_start: float = 0.1,
 
 
 def plot_iou_analysis(df_results: pd.DataFrame, save_path: Optional[str] = None,
-                     show_classes: bool = True, figsize: tuple = (10, 6)):
+                     show_classes: bool = True, figsize: tuple = (10, 6),
+                     title_suffix: str = ""):
     """
     Plot IoU analysis results.
 
@@ -119,6 +120,7 @@ def plot_iou_analysis(df_results: pd.DataFrame, save_path: Optional[str] = None,
         save_path: Path to save plot (optional)
         show_classes: Whether to show per-class curves (default: True)
         figsize: Figure size tuple (default: (10, 6))
+        title_suffix: Additional text to append to plot title (default: "")
     """
     if not MATPLOTLIB_AVAILABLE:
         print("Matplotlib not available. Cannot create plots.")
@@ -144,9 +146,9 @@ def plot_iou_analysis(df_results: pd.DataFrame, save_path: Optional[str] = None,
             plt.plot(df_results['iou_threshold'], df_results[col],
                     '--', color=color, marker=marker, linewidth=1.5, markersize=4, label=f'Class {class_id}')
 
-    plt.xlabel('IoU Threshold')
-    plt.ylabel('Correct Detection Rate (%)')
-    plt.title('Detection Performance vs IoU Threshold')
+    plt.xlabel('IoU Threshold', fontsize=12)
+    plt.ylabel('Correct Detection Rate (%)', fontsize=12)
+    plt.title(f'Detection Performance vs IoU Threshold{title_suffix}', fontsize=14)
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.xlim(df_results['iou_threshold'].min(), df_results['iou_threshold'].max())
