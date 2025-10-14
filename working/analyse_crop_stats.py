@@ -336,13 +336,21 @@ def plot_distribution_analysis(stats, magnitude_values, log_magnitude_values=Non
         axes[1,plot_idx].legend()
     
     plt.tight_layout()
-    
-    # Add figure caption
-    total_pixels = stats['total_pixels']
-    fig.suptitle(f'Figure 4. Statistical distributions of SLC crop pixel values. Top row: relative frequency density distributions with 1st and 99th percentile markers (red dashed lines). '
-                 f' Bottom left: magnitude\n distribution on logarithmic y-axis. Bottom centre: distribution of per-image log-magnitude maximum values. Bottom right: distribution of per-image'
-                 f' real part extrema (max and min values).', fontsize=11, y=-0.02, ha='center')
-    
+
+    # Add figure caption below the figure
+    caption_text = (
+        'Statistical distributions of SLC crop pixel values. Top row: relative frequency density '
+        'distributions with 1st and 99th percentile markers (red dashed lines). Bottom left: '
+        'magnitude distribution on logarithmic y-axis. Bottom centre: distribution of per-image '
+        'log-magnitude maximum values. Bottom right: distribution of per-image real part extrema '
+        '(max and min values).'
+    )
+
+    fig.text(0.1, 0.01, caption_text, ha='left', va='bottom', fontsize=10,
+             wrap=True, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
+
+    plt.subplots_adjust(bottom=0.12)  # Make room for caption
+
     plt.show()
 
 
