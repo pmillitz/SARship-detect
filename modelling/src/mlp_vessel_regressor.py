@@ -5,6 +5,7 @@ A modular implementation for training and loading MLP models for vessel length p
 
 import tensorflow as tf
 import numpy as np
+import os
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from typing import Tuple, Optional, Dict, Any
@@ -292,29 +293,40 @@ def calculate_metrics_by_class(y_true: np.ndarray, y_pred: np.ndarray,
     # Print formatted results
     if split_name:
         print(f"\n=== {split_name} Metrics ===")
-        print(f"{'Overall':<12} {'MAE:':<4} {overall_metrics['mae']:>6.2f}, {'RMSE:':<5} {overall_metrics['rmse']:>6.2f}, {'R²:':<3} {overall_metrics['r2']:>6.3f}, {'VLA:':<4} {overall_metrics['vla']:>6.3f}")
+        print(f"{'Overall':<12} {'MAE:':<4} {overall_metrics['mae']:>6.2f}, {'R²:':<3} {overall_metrics['r2']:>6.3f}, {'VLA:':<4} {overall_metrics['vla']:>6.3f}")
         
         for cls, metrics in results['by_class'].items():
             cls_name = class_names.get(cls, f"Class_{cls}")
-            print(f"{cls_name:<12} {'MAE:':<4} {metrics['mae']:>6.2f}, {'RMSE:':<5} {metrics['rmse']:>6.2f}, {'R²:':<3} {metrics['r2']:>6.3f}, {'VLA:':<4} {metrics['vla']:>6.3f} (n={metrics['n_samples']})")
+            print(f"{cls_name:<12} {'MAE:':<4} {metrics['mae']:>6.2f}, {'R²:':<3} {metrics['r2']:>6.3f}, {'VLA:':<4} {metrics['vla']:>6.3f} (n={metrics['n_samples']})")
     
     return results
 
 
-def plot_results(plot_data: Dict) -> None:
+def plot_results(plot_data: Dict, save_path: Optional[str] = None,
+                 log_dir: str = 'runs/vlength', show_val: bool = False) -> None:
     """
     Create and display plots for notebook use.
-    
+
     Args:
         plot_data: Dictionary containing true/pred values and metrics
+        save_path: Optional path to save the plot (e.g., 'results.png')
+        log_dir: Directory for saving plot if save_path has no directory
+        show_val: If True, show validation plot; if False, only show train and test
     """
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-    
-    datasets = [
-        ('train', 'Training'),
-        ('val', 'Validation'), 
-        ('test', 'Test')
-    ]
+    # Determine which datasets to plot
+    if show_val:
+        datasets = [
+            ('train', 'Training'),
+            ('val', 'Validation'),
+            ('test', 'Test')
+        ]
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    else:
+        datasets = [
+            ('train', 'Training'),
+            ('test', 'Test')
+        ]
+        fig, axes = plt.subplots(1, 2, figsize=(10, 5))
     
     for i, (split, title) in enumerate(datasets):
         ax = axes[i]
@@ -329,23 +341,36 @@ def plot_results(plot_data: Dict) -> None:
             # Color by class
             colors = ['red' if c == 0 else 'lime' for c in classes]
             ax.scatter(y_true, y_pred, c=colors, alpha=0.6, edgecolors='k')
-            
+
             # Add legend
-            vessel_patch = mpatches.Patch(color='red', label='is_vessel (Class 0)')
-            fishing_patch = mpatches.Patch(color='lime', label='is_fishing (Class 1)')
-            ax.legend(handles=[vessel_patch, fishing_patch])
+            vessel_patch = mpatches.Patch(color='red', label='is_vessel')
+            fishing_patch = mpatches.Patch(color='lime', label='is_fishing')
+            ax.legend(handles=[vessel_patch, fishing_patch], loc='lower right')
         else:
             ax.scatter(y_true, y_pred, alpha=0.6, edgecolors='k')
-            
+
         ax.plot([0, 350], [0, 350], 'r--')
-        ax.set_xlabel('True Vessel Length')
-        ax.set_ylabel('Predicted Vessel Length')
-        ax.set_title(f"{title}: MAE={metrics['mae']:.2f}, RMSE={metrics['rmse']:.2f}, R²={metrics['r2']:.3f}, VLA={metrics['vla']:.3f}", fontsize=10.5)
+        ax.set_xlabel('True Vessel Length', fontsize=14)
+        ax.set_ylabel('Predicted Vessel Length', fontsize=14)
+        ax.set_title(f"{title}: MAE={metrics['mae']:.2f}, R²={metrics['r2']:.3f}, VLA={metrics['vla']:.3f}", fontsize=10.5)
         
         # Set fixed axis limits
         ax.set_xlim(0, 350)
         ax.set_ylim(0, 350)
         ax.grid(True)
-    
+
     plt.tight_layout()
+
+    # Save plot if path provided
+    if save_path:
+        # If no directory specified, save to log directory
+        if not os.path.dirname(save_path):
+            full_save_path = os.path.join(log_dir, save_path)
+            os.makedirs(log_dir, exist_ok=True)
+        else:
+            full_save_path = save_path
+
+        plt.savefig(full_save_path, dpi=300, bbox_inches='tight')
+        print(f"Plot saved to {full_save_path}")
+
     plt.show()

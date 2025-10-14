@@ -273,18 +273,18 @@ class VesselLengthRegressor:
             
             # Add legend
             import matplotlib.patches as mpatches
-            vessel_patch = mpatches.Patch(color='red', label='is_vessel (Class 0)')
-            fishing_patch = mpatches.Patch(color='lime', label='is_fishing (Class 1)')
-            plt.legend(handles=[vessel_patch, fishing_patch, 
+            vessel_patch = mpatches.Patch(color='red', label='is_vessel')
+            fishing_patch = mpatches.Patch(color='lime', label='is_fishing')
+            plt.legend(handles=[vessel_patch, fishing_patch,
                                plt.Line2D([0], [0], color='red', linestyle='--', label='Ideal')])
         else:
             plt.scatter(y_true, y_pred, alpha=0.6, edgecolors='k')
             plt.legend(['Ideal'])
-            
+
         plt.plot([y_true.min(), y_true.max()], [y_true.min(), y_true.max()], 'r--')
-        plt.xlabel('True Vessel Length')
-        plt.ylabel('Predicted Vessel Length')
-        plt.title(f"{title_prefix}: MAE={metrics['mae']:.2f}, RMSE={metrics['rmse']:.2f}, R²={metrics['r2']:.3f}, VLA={metrics['vla']:.3f}")
+        plt.xlabel('True Vessel Length', fontsize=14)
+        plt.ylabel('Predicted Vessel Length', fontsize=14)
+        plt.title(f"{title_prefix}: MAE={metrics['mae']:.2f}, R²={metrics['r2']:.3f}, VLA={metrics['vla']:.3f}")
         
         # Set fixed axis limits (square figure size ensures square appearance)
         plt.xlim(0, 350)
@@ -321,19 +321,19 @@ class VesselLengthRegressor:
                 # Color by class
                 colors = ['red' if c == 0 else 'lime' for c in classes]
                 ax.scatter(y_true, y_pred, c=colors, alpha=0.6, edgecolors='k')
-                
+
                 # Add legend
                 import matplotlib.patches as mpatches
-                vessel_patch = mpatches.Patch(color='red', label='is_vessel (Class 0)')
-                fishing_patch = mpatches.Patch(color='lime', label='is_fishing (Class 1)')
+                vessel_patch = mpatches.Patch(color='red', label='is_vessel')
+                fishing_patch = mpatches.Patch(color='lime', label='is_fishing')
                 ax.legend(handles=[vessel_patch, fishing_patch])
             else:
                 ax.scatter(y_true, y_pred, alpha=0.6, edgecolors='k')
-                
+
             ax.plot([0, 350], [0, 350], 'r--')
-            ax.set_xlabel('True Vessel Length')
-            ax.set_ylabel('Predicted Vessel Length')
-            ax.set_title(f"{title}: MAE={metrics['mae']:.2f}, RMSE={metrics['rmse']:.2f}, R²={metrics['r2']:.3f}, VLA={metrics['vla']:.3f}", fontsize=10.5)
+            ax.set_xlabel('True Vessel Length', fontsize=14)
+            ax.set_ylabel('Predicted Vessel Length', fontsize=14)
+            ax.set_title(f"{title}: MAE={metrics['mae']:.2f}, R²={metrics['r2']:.3f}, VLA={metrics['vla']:.3f}", fontsize=10.5)
             
             # Set fixed axis limits
             ax.set_xlim(0, 350)
