@@ -126,7 +126,7 @@ def compare_labels(gt_dir: str, pred_dir: str, iou_threshold: float = 0.5) -> Di
     Args:
         gt_dir: Directory containing ground truth label files
         pred_dir: Directory containing predicted label files
-        iou_threshold: IoU threshold for considering a detection as correct (must be strictly greater than)
+        iou_threshold: IoU threshold for considering a detection as correct (must be greater than or equal to)
 
     Returns:
         Dictionary containing comparison results
@@ -201,15 +201,15 @@ def compare_labels(gt_dir: str, pred_dir: str, iou_threshold: float = 0.5) -> Di
                     best_incorrect_iou = iou
                     best_incorrect_idx = i
 
-            # Check for correct detection (IoU > threshold AND correct class)
-            if best_correct_iou > iou_threshold:
+            # Check for correct detection (IoU >= threshold AND correct class)
+            if best_correct_iou >= iou_threshold:
                 file_result['matched_predictions'] += 1
                 file_result['correct_detections'] += 1
                 results['correct_detections'] += 1
                 results['class_breakdown'][gt_class]['correct'] += 1
                 matched_pred_indices.add(best_correct_idx)
             # Check for incorrect classification with sufficient IoU (only if no correct match)
-            elif best_incorrect_iou > iou_threshold:
+            elif best_incorrect_iou >= iou_threshold:
                 file_result['matched_predictions'] += 1
                 file_result['incorrect_class'] += 1
                 results['incorrect_classifications'] += 1
@@ -258,7 +258,7 @@ def print_comparison_report(results: Dict, iou_threshold: float = 0.5):
     if results['total_gt_objects'] > 0:
         correct_detection_rate = (results['correct_detections'] / results['total_gt_objects']) * 100
         print(f"   Overall: {results['correct_detections']}/{results['total_gt_objects']} ({correct_detection_rate:.1f}%)")
-        print(f"   (IoU > {iou_threshold} AND correct classification)")
+        print(f"   (IoU >= {iou_threshold} AND correct classification)")
     else:
         print("   No ground truth objects found")
 
@@ -285,7 +285,7 @@ def main():
     parser.add_argument('gt_dir', help='Directory containing ground truth label files')
     parser.add_argument('pred_dir', help='Directory containing predicted label files')
     parser.add_argument('--iou-threshold', type=float, default=0.5,
-                       help='IoU threshold for matching predictions to ground truth - must be strictly exceeded (default: 0.5)')
+                       help='IoU threshold for matching predictions to ground truth - must be met or exceeded (default: 0.5)')
     parser.add_argument('--verbose', action='store_true',
                        help='Show detailed per-file analysis')
 
