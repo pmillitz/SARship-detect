@@ -56,31 +56,34 @@ def extract_bbox_features(model_path, metadata_path, image_dir, file_ext, output
                 log_print(f"SKIP: Invalid vessel length for {image_name} (length={vessel_length_m})")
                 continue
 
-            result = model(image_path, conf=0.03, iou=0.3, verbose=False)[0]  # conf default=0.25; iou default=0.7
+            result = model(image_path, conf=0.01, iou=0.65, verbose=False)[0]  # conf default=0.25; iou default=0.7
             boxes = result.boxes
-            
+
             if boxes is None or len(boxes) == 0:
                 skipped_no_detections += 1
                 log_print(f"SKIP: No detections for {image_name}")
                 continue
-            
-            log_print(f"PROCESS: {image_name} - {len(boxes)} detections, vessel_length={vessel_length_m}")
 
-            for box in boxes:
-                xywh = box.xywhn.cpu().numpy().flatten()
-                conf = box.conf.item()
-                cls = int(box.cls.item())
-                width, height = xywh[2], xywh[3]
-                total_detections += 1
+            # Select only the highest confidence detection
+            best_idx = boxes.conf.argmax()
+            best_box = boxes[best_idx]
 
-                records.append({
-                    'image': image_name,
-                    'width': width,     # predicted
-                    'height': height,   # predicted
-                    'conf': conf,       # predicted
-                    'class': cls,       # predicted
-                    'vessel_length_m': vessel_length_m  # ground truth
-                })
+            log_print(f"PROCESS: {image_name} - {len(boxes)} detections, using highest conf, vessel_length={vessel_length_m}")
+
+            xywh = best_box.xywhn.cpu().numpy().flatten()
+            conf = best_box.conf.item()
+            cls = int(best_box.cls.item())
+            width, height = xywh[2], xywh[3]
+            total_detections += 1
+
+            records.append({
+                'image': image_name,
+                'width': width,     # predicted
+                'height': height,   # predicted
+                'conf': conf,       # predicted
+                'class': cls,       # predicted
+                'vessel_length_m': vessel_length_m  # ground truth
+            })
 
         log_print(f"\n=== PROCESSING SUMMARY ===", print_to_screen=True)
         log_print(f"Total images found: {len(image_files)}", print_to_screen=True)
