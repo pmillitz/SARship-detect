@@ -502,14 +502,14 @@ def plot_all_classes_multimodel_combined(model_results: Dict[str, pd.DataFrame],
         # Add class name box in top right corner
         textstr = display_name
         props = dict(boxstyle='round,pad=0.5,rounding_size=0.15', facecolor='white',
-                     edgecolor='black', linewidth=1.5, alpha=0.95)
+                     edgecolor='black', linewidth=1.5, alpha=0.0)
         ax.text(0.95, 0.94, textstr, transform=ax.transAxes,
                 fontsize=15, fontweight='bold', verticalalignment='top', horizontalalignment='right',
                 bbox=props)
 
         # Add legend to each subplot (bottom left)
-        ax.legend(loc='lower left', framealpha=0.95,
-                 edgecolor='black', fancybox=True, prop={'size': 16, 'weight': 'bold'})
+        ax.legend(loc='lower left', framealpha=0.0,
+                 edgecolor='black', fancybox=True, prop={'size': 16})
 
     # Set y-axis label only on the leftmost subplot
     axes[0].set_ylabel('Detection Rate (%)', fontsize=16, fontweight='bold')
