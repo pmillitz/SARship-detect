@@ -303,7 +303,8 @@ def calculate_metrics_by_class(y_true: np.ndarray, y_pred: np.ndarray,
 
 
 def plot_results(plot_data: Dict, save_path: Optional[str] = None,
-                 log_dir: str = 'runs/vlength', show_val: bool = False) -> None:
+                 log_dir: str = 'runs/vlength', split: str = 'both',
+                 show_val: bool = False) -> None:
     """
     Create and display plots for notebook use.
 
@@ -311,59 +312,84 @@ def plot_results(plot_data: Dict, save_path: Optional[str] = None,
         plot_data: Dictionary containing true/pred values and metrics
         save_path: Optional path to save the plot (e.g., 'results.png')
         log_dir: Directory for saving plot if save_path has no directory
-        show_val: If True, show validation plot; if False, only show train and test
+        split: Which dataset to plot - 'train', 'val', 'test', or 'both' (default: 'both')
+        show_val: If True and split='both', show validation plot; if False, only show train and test
     """
-    # Determine which datasets to plot
-    if show_val:
-        datasets = [
-            ('train', 'Training'),
-            ('val', 'Validation'),
-            ('test', 'Test')
-        ]
-        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    if split == 'both':
+        # Multi-plot mode
+        if show_val:
+            datasets = [
+                ('train', 'Training'),
+                ('val', 'Validation'),
+                ('test', 'Test')
+            ]
+            fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        else:
+            datasets = [
+                ('train', 'Training'),
+                ('test', 'Test')
+            ]
+            fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+
+        for i, (split_name, title) in enumerate(datasets):
+            ax = axes[i]
+            plt.sca(ax)
+
+            y_true = plot_data[f'{split_name}_true']
+            y_pred = plot_data[f'{split_name}_pred']
+            metrics = plot_data[f'{split_name}_metrics']
+            classes = plot_data.get(f'{split_name}_classes')
+
+            if classes is not None:
+                colors = ['red' if c == 0 else 'lime' for c in classes]
+                ax.scatter(y_true, y_pred, c=colors, alpha=0.6, edgecolors='k')
+                vessel_patch = mpatches.Patch(color='red', label='is_vessel')
+                fishing_patch = mpatches.Patch(color='lime', label='is_fishing')
+                ax.legend(handles=[vessel_patch, fishing_patch], loc='upper left')
+            else:
+                ax.scatter(y_true, y_pred, alpha=0.6, edgecolors='k')
+
+            ax.plot([0, 350], [0, 350], 'r--')
+            ax.set_xlabel('True Vessel Length', fontsize=14)
+            ax.set_ylabel('Predicted Vessel Length', fontsize=14)
+            ax.set_title(f"{title}: MAE={metrics['mae']:.2f}, R²={metrics['r2']:.3f}, VLA={metrics['vla']:.3f}", fontsize=10.5)
+            ax.set_xlim(0, 350)
+            ax.set_ylim(0, 350)
+            ax.grid(True)
+
+        plt.tight_layout()
     else:
-        datasets = [
-            ('train', 'Training'),
-            ('test', 'Test')
-        ]
-        fig, axes = plt.subplots(1, 2, figsize=(10, 5))
-    
-    for i, (split, title) in enumerate(datasets):
-        ax = axes[i]
-        plt.sca(ax)  # Set current axis
-        
+        # Single plot mode
+        fig = plt.figure(figsize=(8, 8))
+        title_map = {'train': 'Training', 'val': 'Validation', 'test': 'Test'}
+        title = title_map.get(split, split.capitalize())
+
         y_true = plot_data[f'{split}_true']
         y_pred = plot_data[f'{split}_pred']
         metrics = plot_data[f'{split}_metrics']
         classes = plot_data.get(f'{split}_classes')
-        
-        if classes is not None:
-            # Color by class
-            colors = ['red' if c == 0 else 'lime' for c in classes]
-            ax.scatter(y_true, y_pred, c=colors, alpha=0.6, edgecolors='k')
 
-            # Add legend
+        if classes is not None:
+            colors = ['red' if c == 0 else 'lime' for c in classes]
+            plt.scatter(y_true, y_pred, c=colors, alpha=0.6, edgecolors='k')
             vessel_patch = mpatches.Patch(color='red', label='is_vessel')
             fishing_patch = mpatches.Patch(color='lime', label='is_fishing')
-            ax.legend(handles=[vessel_patch, fishing_patch], loc='lower right')
+            plt.legend(handles=[vessel_patch, fishing_patch,
+                              plt.Line2D([0], [0], color='red', linestyle='--', label='Ideal')],
+                      loc='upper left')
         else:
-            ax.scatter(y_true, y_pred, alpha=0.6, edgecolors='k')
+            plt.scatter(y_true, y_pred, alpha=0.6, edgecolors='k')
+            plt.legend(['Ideal'], loc='upper left')
 
-        ax.plot([0, 350], [0, 350], 'r--')
-        ax.set_xlabel('True Vessel Length', fontsize=14)
-        ax.set_ylabel('Predicted Vessel Length', fontsize=14)
-        ax.set_title(f"{title}: MAE={metrics['mae']:.2f}, R²={metrics['r2']:.3f}, VLA={metrics['vla']:.3f}", fontsize=10.5)
-        
-        # Set fixed axis limits
-        ax.set_xlim(0, 350)
-        ax.set_ylim(0, 350)
-        ax.grid(True)
+        plt.plot([0, 350], [0, 350], 'r--')
+        plt.xlabel('True Vessel Length', fontsize=14)
+        plt.ylabel('Predicted Vessel Length', fontsize=14)
+        plt.title(f"{title}: MAE={metrics['mae']:.2f}, R²={metrics['r2']:.3f}, VLA={metrics['vla']:.3f}")
+        plt.xlim(0, 350)
+        plt.ylim(0, 350)
+        plt.grid(True)
 
-    plt.tight_layout()
-
-    # Save plot if path provided
     if save_path:
-        # If no directory specified, save to log directory
         if not os.path.dirname(save_path):
             full_save_path = os.path.join(log_dir, save_path)
             os.makedirs(log_dir, exist_ok=True)
